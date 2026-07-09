@@ -10,9 +10,9 @@
   },
   "dependencies": {
     "@pessi/shared": "file:../shared",
-    "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "ws": "^8.18.0"
+    "cors": "^2.8.6",
+    "express": "^4.22.2",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
