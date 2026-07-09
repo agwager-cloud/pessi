@@ -1,0 +1,20 @@
+{
+  "name": "pessis-pens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pessi's Pens - multiplayer silly penalty shootout tournament game",
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "npm run build -w shared && concurrently -n SERVER,CLIENT -c yellow,cyan \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w shared && npm run build -w server && npm run build -w client",
+    "start": "npm run start -w server",
+    "zip:itch": "node scripts/make-itch-zip.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

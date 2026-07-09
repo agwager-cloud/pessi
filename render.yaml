@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: pessis-pens-server
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build -w shared && npm run build -w server
+    startCommand: npm run start -w server
+    healthCheckPath: /health
