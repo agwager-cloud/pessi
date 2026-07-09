@@ -1,9 +1,11 @@
-node_modules
+node_modules/
 .env
 .DS_Store
-dist
-build
+
+dist/
+build/
 *.log
-client/dist
-server/dist
-shared/dist
+
+client/dist/
+server/dist/
+shared/dist/
