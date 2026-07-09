@@ -3,6 +3,9 @@ services:
     name: pessis-pens-server
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build -w shared && npm run build -w server
+    buildCommand: npm ci && npm run build -w shared && npm run build -w server
     startCommand: npm run start -w server
     healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20.19.5
