@@ -135,6 +135,10 @@ export class GameRoom {
     if (existing) { existing.connected = true; existing.sessionId = client.sessionId; }
     else this.players.set(client.sessionId, { id: client.sessionId, sessionId: client.sessionId, name: cleanName(options.name), characterIndex: -1, isBot: false, connected: true, eliminated: false, wins: 0 });
     if (!this.hostId) this.hostId = client.sessionId;
+    // Character selection is now an explicit authoritative room phase. This
+    // keeps every client on the same route and avoids the client having to
+    // infer the scene from an unselected character alone.
+    if (this.phase === "lobby") this.phase = "characterSelect";
     this.autoSizeToHumans();
     this.message = `${this.nameOf(client.sessionId)} is choosing a footballer.`;
     this.broadcastState();

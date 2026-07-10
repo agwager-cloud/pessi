@@ -22,24 +22,80 @@ export class CharacterSelectScene extends Phaser.Scene {
 
   create() {
     playMusic(this, "startLobby");
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.unsub?.());
-    this.events.once(Phaser.Scenes.Events.DESTROY, () => this.unsub?.());
+
+    const cleanup = () => {
+      this.unsub?.();
+      this.unsub = undefined;
+    };
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+    this.events.once(Phaser.Scenes.Events.DESTROY, cleanup);
+
+    // Draw a visible loading screen immediately. This prevents a blank canvas
+    // if the scene starts between WebSocket state messages or while itch.io is
+    // restoring the Phaser canvas after the StartScene shuts down.
+    this.renderWaitingForState();
 
     this.unsub = Net.onState((state) => {
       if (!this.scene.isActive("CharacterSelectScene")) return;
-      const me = state.players.find((p) => p.id === Net.sessionId);
-      if (me && me.characterIndex >= 0 && this.confirmedIndex !== me.characterIndex) {
-        this.confirmedIndex = me.characterIndex;
-        this.pendingIndex = null;
-        playPlayerName(CHARACTERS[me.characterIndex]?.name ?? me.name);
-      }
-      if (me && me.characterIndex < 0 && this.pendingIndex !== null) {
-        const takenByOther = state.players.some((p) => p.id !== me.id && p.characterIndex === this.pendingIndex);
-        if (takenByOther || state.message.toLowerCase().includes("taken")) this.pendingIndex = null;
-      }
-      routeScene(this, state);
-      if (this.scene.isActive("CharacterSelectScene")) this.render(state);
+      this.handleState(state);
     });
+
+    // Safety net: Net.onState normally supplies the cached state immediately,
+    // but this delayed retry guarantees the scene renders even if a transition
+    // and a server broadcast occur in the same frame.
+    this.time.delayedCall(100, () => {
+      if (!this.scene.isActive("CharacterSelectScene")) return;
+      if (Net.state) this.handleState(Net.state);
+      else this.renderWaitingForState();
+    });
+  }
+
+  private handleState(state: PublicState) {
+    const me = state.players.find((p) => p.id === Net.sessionId);
+    const message = String(state.message ?? "Choose an available footballer.");
+
+    if (me && me.characterIndex >= 0 && this.confirmedIndex !== me.characterIndex) {
+      this.confirmedIndex = me.characterIndex;
+      this.pendingIndex = null;
+      playPlayerName(CHARACTERS[me.characterIndex]?.name ?? me.name);
+    }
+    if (me && me.characterIndex < 0 && this.pendingIndex !== null) {
+      const takenByOther = state.players.some((p) => p.id !== me.id && p.characterIndex === this.pendingIndex);
+      if (takenByOther || message.toLowerCase().includes("taken")) this.pendingIndex = null;
+    }
+
+    // Render before routing so there is never an empty frame, even when the
+    // confirmed selection immediately advances this client to the lobby.
+    this.render(state);
+    routeScene(this, state);
+  }
+
+  private renderWaitingForState() {
+    [...this.children.list].forEach((child) => child.destroy());
+    if (this.textures.exists("lobbyBg")) {
+      this.add.image(W / 2, H / 2, "lobbyBg").setDisplaySize(W, H);
+    } else {
+      this.add.rectangle(W / 2, H / 2, W, H, 0x07170c, 1);
+    }
+    this.add.rectangle(W / 2, H / 2, W, H, 0x04130b, 0.52);
+    this.add.text(W / 2, 300, "LOADING PLAYER SELECTION", {
+      fontFamily: "Arial",
+      fontSize: "36px",
+      fontStyle: "900",
+      color: "#fff2a6",
+      stroke: "#000000",
+      strokeThickness: 6,
+      align: "center"
+    }).setOrigin(0.5);
+    this.add.text(W / 2, 360, "Getting the latest available players from the room...", {
+      fontFamily: "Arial",
+      fontSize: "21px",
+      fontStyle: "bold",
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center"
+    }).setOrigin(0.5);
   }
 
   private render(state: PublicState) {
@@ -184,8 +240,9 @@ export class CharacterSelectScene extends Phaser.Scene {
       }
     });
 
-    const statusColor = state.message.toLowerCase().includes("taken") ? "#ffb7b7" : "#ffffff";
-    this.add.text(W / 2, 690, me?.characterIndex >= 0 ? "Player locked in — waiting for the lobby." : state.message, {
+    const safeMessage = String(state.message ?? "Choose an available footballer.");
+    const statusColor = safeMessage.toLowerCase().includes("taken") ? "#ffb7b7" : "#ffffff";
+    this.add.text(W / 2, 690, me?.characterIndex >= 0 ? "Player locked in — waiting for the lobby." : safeMessage, {
       fontFamily: "Arial",
       fontSize: "17px",
       fontStyle: "900",
