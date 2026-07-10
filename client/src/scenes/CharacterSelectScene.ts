@@ -3,11 +3,12 @@ import { CHARACTERS } from "@pessi/shared";
 import { Net } from "../net/Net";
 import { playMusic, playPlayerName, preloadAudio } from "../audio/audio";
 import type { PlayerRecord, PublicState } from "../types";
-import { addSoundToggle, drawFootballer, H, W } from "../ui/ui";
+import { addButton, addSoundToggle, drawFootballer, H, W } from "../ui/ui";
 import { routeScene } from "../ui/routing";
 
 export class CharacterSelectScene extends Phaser.Scene {
   private unsub?: () => void;
+  private selectedIndex: number | null = null;
   private pendingIndex: number | null = null;
   private confirmedIndex: number | null = null;
 
@@ -57,11 +58,19 @@ export class CharacterSelectScene extends Phaser.Scene {
     if (me && me.characterIndex >= 0 && this.confirmedIndex !== me.characterIndex) {
       this.confirmedIndex = me.characterIndex;
       this.pendingIndex = null;
+      this.selectedIndex = null;
       playPlayerName(CHARACTERS[me.characterIndex]?.name ?? me.name);
     }
     if (me && me.characterIndex < 0 && this.pendingIndex !== null) {
       const takenByOther = state.players.some((p) => p.id !== me.id && p.characterIndex === this.pendingIndex);
-      if (takenByOther || message.toLowerCase().includes("taken")) this.pendingIndex = null;
+      if (takenByOther || message.toLowerCase().includes("taken")) {
+        this.pendingIndex = null;
+        this.selectedIndex = null;
+      }
+    }
+    if (me && me.characterIndex < 0 && this.selectedIndex !== null) {
+      const selectedWasTaken = state.players.some((p) => p.id !== me.id && p.characterIndex === this.selectedIndex);
+      if (selectedWasTaken) this.selectedIndex = null;
     }
 
     // Render before routing so there is never an empty frame, even when the
@@ -122,7 +131,7 @@ export class CharacterSelectScene extends Phaser.Scene {
       strokeThickness: 5
     }).setOrigin(0, 0.5);
 
-    this.add.text(34, 66, "First in, best dressed! Tap an available player to reserve them.", {
+    this.add.text(34, 66, "Tap a player, then press CONFIRM to reserve them.", {
       fontFamily: "Arial",
       fontSize: "18px",
       fontStyle: "bold",
@@ -150,7 +159,7 @@ export class CharacterSelectScene extends Phaser.Scene {
     const gridX = 20;
     const gridY = 112;
     const gridW = W - 40;
-    const gridH = 552;
+    const gridH = 492;
     const gapX = 7;
     const gapY = 8;
     const cardW = (gridW - gapX * (columns - 1)) / columns;
@@ -165,10 +174,11 @@ export class CharacterSelectScene extends Phaser.Scene {
       const mine = owner?.id === Net.sessionId;
       const taken = Boolean(owner && !mine);
       const pending = this.pendingIndex === index && !mine;
+      const locallySelected = this.selectedIndex === index && !mine && !taken;
 
       const card = this.add.container(x + cardW / 2, y + cardH / 2);
-      const bg = this.add.rectangle(0, 0, cardW, cardH, mine ? 0x0b5d33 : 0x07170c, mine ? 0.96 : 0.86)
-        .setStrokeStyle(mine ? 5 : 2, mine ? 0xffd21f : 0xffffff, mine ? 1 : 0.32);
+      const bg = this.add.rectangle(0, 0, cardW, cardH, mine || locallySelected ? 0x0b5d33 : 0x07170c, mine || locallySelected ? 0.96 : 0.86)
+        .setStrokeStyle(mine || locallySelected ? 4 : 2, mine || locallySelected ? 0xffd21f : 0xffffff, mine || locallySelected ? 1 : 0.32);
       card.add(bg);
 
       const fakePlayer: PlayerRecord = {
@@ -181,37 +191,41 @@ export class CharacterSelectScene extends Phaser.Scene {
         eliminated: false,
         wins: 0
       };
-      const footballer = drawFootballer(this, 0, -18, fakePlayer, 0.48, false);
+      const footballer = drawFootballer(this, 0, -24, fakePlayer, 0.39, false);
       card.add(footballer);
 
-      const displayName = character.name.length > 20 ? character.name.replace(" ", "\n") : character.name;
-      card.add(this.add.text(0, 38, displayName, {
+      // Dedicated name and country zones prevent the labels from colliding.
+      const nameSize = character.name.length > 18 ? 10 : character.name.length > 14 ? 11 : 12;
+      card.add(this.add.text(0, 18, character.name, {
         fontFamily: "Arial",
-        fontSize: "12px",
+        fontSize: `${nameSize}px`,
         fontStyle: "900",
         color: "#ffffff",
         stroke: "#000000",
         strokeThickness: 3,
         align: "center",
-        wordWrap: { width: cardW - 8 }
+        wordWrap: { width: cardW - 10, useAdvancedWrap: true },
+        fixedWidth: cardW - 8,
+        fixedHeight: 30
       }).setOrigin(0.5, 0));
-      card.add(this.add.text(0, cardH / 2 - 18, `${character.country} #${character.number}`, {
+      card.add(this.add.text(0, cardH / 2 - 13, `${character.country}  #${character.number}`, {
         fontFamily: "Arial",
-        fontSize: "11px",
+        fontSize: "10px",
         fontStyle: "bold",
         color: "#fff2a6",
         stroke: "#000000",
         strokeThickness: 2,
-        align: "center"
+        align: "center",
+        fixedWidth: cardW - 8
       }).setOrigin(0.5));
 
       if (taken || pending) {
         footballer.setAlpha(0.28);
         bg.setFillStyle(0x242424, 0.92);
         card.add(this.add.rectangle(0, 0, cardW, cardH, 0x000000, 0.38));
-        card.add(this.add.text(0, 0, pending ? "SELECTING..." : "UNAVAILABLE", {
+        card.add(this.add.text(0, 0, pending ? "RESERVING..." : "UNAVAILABLE", {
           fontFamily: "Arial",
-          fontSize: pending ? "14px" : "15px",
+          fontSize: pending ? "13px" : "14px",
           fontStyle: "900",
           color: pending ? "#fff2a6" : "#dddddd",
           stroke: "#000000",
@@ -219,30 +233,66 @@ export class CharacterSelectScene extends Phaser.Scene {
           align: "center"
         }).setOrigin(0.5));
       } else if (mine) {
-        card.add(this.add.text(0, -cardH / 2 + 12, "YOUR PLAYER ✓", {
+        card.add(this.add.text(0, -cardH / 2 + 10, "YOUR PLAYER ✓", {
           fontFamily: "Arial",
-          fontSize: "12px",
+          fontSize: "11px",
           fontStyle: "900",
           color: "#fff2a6",
           stroke: "#000000",
           strokeThickness: 3
         }).setOrigin(0.5));
-      } else if (me && me.characterIndex < 0 && this.pendingIndex === null) {
+      } else if (locallySelected) {
+        card.add(this.add.text(0, -cardH / 2 + 10, "SELECTED", {
+          fontFamily: "Arial",
+          fontSize: "11px",
+          fontStyle: "900",
+          color: "#fff2a6",
+          stroke: "#000000",
+          strokeThickness: 3
+        }).setOrigin(0.5));
+      }
+
+      if (!taken && !pending && me && me.characterIndex < 0 && this.pendingIndex === null) {
         bg.setInteractive({ useHandCursor: true });
         bg.on("pointerover", () => bg.setStrokeStyle(4, 0xffd21f, 0.95));
-        bg.on("pointerout", () => bg.setStrokeStyle(2, 0xffffff, 0.32));
+        bg.on("pointerout", () => bg.setStrokeStyle(locallySelected ? 4 : 2, locallySelected ? 0xffd21f : 0xffffff, locallySelected ? 1 : 0.32));
         bg.on("pointerdown", () => {
-          if (this.pendingIndex !== null) return;
-          this.pendingIndex = index;
-          Net.send("selectCharacter", index);
+          this.selectedIndex = index;
           this.render(state);
         });
       }
     });
 
+    const canConfirm = Boolean(me && me.characterIndex < 0 && this.selectedIndex !== null && this.pendingIndex === null);
+    if (canConfirm) {
+      const selected = this.selectedIndex as number;
+      addButton(this, W / 2, 644, 250, 50, "CONFIRM PLAYER", () => {
+        if (this.pendingIndex !== null || this.selectedIndex === null) return;
+        this.pendingIndex = this.selectedIndex;
+        Net.send("selectCharacter", this.selectedIndex);
+        this.render(state);
+      }, 0x0b5d33);
+      this.add.text(W / 2 - 150, 644, `Selected: ${CHARACTERS[selected].name}`, {
+        fontFamily: "Arial",
+        fontSize: "16px",
+        fontStyle: "900",
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 4,
+        align: "right"
+      }).setOrigin(1, 0.5);
+    }
+
     const safeMessage = String(state.message ?? "Choose an available footballer.");
     const statusColor = safeMessage.toLowerCase().includes("taken") ? "#ffb7b7" : "#ffffff";
-    this.add.text(W / 2, 690, me?.characterIndex >= 0 ? "Player locked in — waiting for the lobby." : safeMessage, {
+    const footerMessage = me?.characterIndex >= 0
+      ? "Player locked in — waiting for the other players."
+      : this.pendingIndex !== null
+        ? "Reserving player..."
+        : this.selectedIndex !== null
+          ? "Press CONFIRM PLAYER to lock in your choice."
+          : safeMessage;
+    this.add.text(W / 2, 696, footerMessage, {
       fontFamily: "Arial",
       fontSize: "17px",
       fontStyle: "900",
