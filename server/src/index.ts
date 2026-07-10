@@ -75,7 +75,6 @@ wss.on("connection", (ws: WebSocket, req) => {
   const isHost = url.searchParams.get("host") === "1";
   const requestedCode = url.searchParams.get("roomCode")?.trim() ?? "";
   const name = url.searchParams.get("name") ?? "Player";
-  const characterIndex = Number(url.searchParams.get("characterIndex") ?? 0);
 
   let room: GameRoom | undefined;
 
@@ -102,7 +101,7 @@ wss.on("connection", (ws: WebSocket, req) => {
     }),
   );
 
-  room.join(client, { name, characterIndex });
+  room.join(client, { name });
 
   ws.on("message", (buffer) => {
     try {

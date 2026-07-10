@@ -16,7 +16,7 @@ export type ClientSocket = {
   ws: WebSocket;
 };
 
-type JoinOptions = { name?: string; characterIndex?: number };
+type JoinOptions = { name?: string };
 
 const TACKLE_LINES = [
   "banana-peel backflip tackle",
@@ -131,17 +131,18 @@ export class GameRoom {
   constructor(roomCode: string) { this.roomCode = roomCode; this.tick = setInterval(() => this.update(), 100); }
   join(client: ClientSocket, options: JoinOptions) {
     this.clients.set(client.sessionId, client);
-    const characterIndex = this.pickCharacterIndex(Number(options.characterIndex ?? 0));
     const existing = this.players.get(client.sessionId);
     if (existing) { existing.connected = true; existing.sessionId = client.sessionId; }
-    else this.players.set(client.sessionId, { id: client.sessionId, sessionId: client.sessionId, name: cleanName(options.name), characterIndex, isBot: false, connected: true, eliminated: false, wins: 0 });
+    else this.players.set(client.sessionId, { id: client.sessionId, sessionId: client.sessionId, name: cleanName(options.name), characterIndex: -1, isBot: false, connected: true, eliminated: false, wins: 0 });
     if (!this.hostId) this.hostId = client.sessionId;
-    this.autoSizeToHumans(); this.message = `${this.nameOf(client.sessionId)} joined the chaos.`; this.broadcastState();
+    this.autoSizeToHumans();
+    this.message = `${this.nameOf(client.sessionId)} is choosing a footballer.`;
+    this.broadcastState();
   }
   leave(sessionId: string) {
     this.spectatorMatchByViewer.delete(sessionId);
     this.clients.delete(sessionId); const p=this.players.get(sessionId);
-    if (p) { p.connected=false; p.sessionId=null; if(this.phase==="lobby") this.players.delete(sessionId); }
+    if (p) { p.connected=false; p.sessionId=null; if(this.phase==="lobby"||this.phase==="characterSelect") this.players.delete(sessionId); }
     if(this.hostId===sessionId) this.hostId=[...this.players.values()].find(p=>!p.isBot&&p.connected)?.id??null;
     this.autoSizeToHumans(); this.broadcastState();
   }
@@ -149,7 +150,9 @@ export class GameRoom {
   isEmpty(){ return this.clients.size===0; }
   receive(client: ClientSocket, raw: unknown) {
     const msg=raw as {type?:string;data?:unknown}; const type=String(msg.type??""); const data=msg.data;
-    if(type==="setTournamentSize") this.hostOnly(client,()=>this.setTournamentSize(Number(data)));
+    if(type==="selectCharacter") this.selectCharacter(client, Number(data));
+    else if(type==="changePlayers") this.hostOnly(client,()=>this.changePlayers());
+    else if(type==="setTournamentSize") this.hostOnly(client,()=>this.setTournamentSize(Number(data)));
     else if(type==="addBot") this.hostOnly(client,()=>this.addBot());
     else if(type==="removeBot") this.hostOnly(client,()=>this.removeBot(String(data??"")));
     else if(type==="removePlayer") this.hostOnly(client,()=>this.removePlayer(String(data??"")));
@@ -184,21 +187,63 @@ export class GameRoom {
     const view=viewerId?this.runtimeForViewer(viewerId):{runtime:null,isSpectating:false};
     const r=view.runtime;
     const visiblePenalty=r?.activePenalty?{...r.activePenalty,goaliePick:viewerId===r.activePenalty.goalieId?r.activePenalty.goaliePick:null}:null;
-    const viewerPhase = r ? r.phase : this.phase;
+    const viewerPlayer = viewerId ? this.players.get(viewerId) : null;
+    const viewerPhase = r ? r.phase : (viewerPlayer && !viewerPlayer.isBot && viewerPlayer.characterIndex < 0 ? "characterSelect" : this.phase);
     const liveCount=this.runtimes.size;
     return { roomCode:this.roomCode,hostId:this.hostId,phase:viewerPhase,tournamentSize:this.tournamentSize,players:[...this.players.values()].sort((a,b)=>a.name.localeCompare(b.name)),bracket:this.bracket,activeMatchId:r?.matchId??null,isSpectating:view.isSpectating,liveMatchIds:[...this.runtimes.keys()],activePenalty:visiblePenalty,tackle:r?.tackle??null,lastShot:r?.lastShot??null,roundNumber:this.roundNumber,matchIndex:r?this.matchById(r.matchId)?.matchNo??0:this.matchIndex,message:r?.message??(this.phase==="roundLive"?`Round ${this.roundNumber} is live • ${liveCount} human match${liveCount===1?"":"es"} still playing.`:this.message)};
   }
   private broadcastState(){ for(const c of this.clients.values()) if(c.ws.readyState===c.ws.OPEN)c.ws.send(JSON.stringify({type:"state",data:this.publicState(c.sessionId)})); }
-  private pickCharacterIndex(requested:number){const used=new Set([...this.players.values()].map(p=>p.characterIndex));const safe=Number.isFinite(requested)?clamp(Math.floor(requested),0,CHARACTERS.length-1):0;if(!used.has(safe))return safe;for(let i=0;i<CHARACTERS.length;i++)if(!used.has(i))return i;return safe;}
-  private autoSizeToHumans(){if(this.phase!=="lobby")return;const h=[...this.players.values()].filter(p=>!p.isBot).length;this.tournamentSize=nextTournamentSize(h);this.trimBotsToFit();}
+  private selectCharacter(c: ClientSocket, requested: number) {
+    const player = this.players.get(c.sessionId);
+    if (!player || player.isBot || player.characterIndex >= 0) return;
+    const index = Number.isFinite(requested) ? Math.floor(requested) : -1;
+    if (index < 0 || index >= CHARACTERS.length) return;
+    const taken = [...this.players.values()].some(p => p.id !== player.id && p.characterIndex === index);
+    if (taken) {
+      this.message = `${CHARACTERS[index].name} was just taken. Please choose another player.`;
+      this.broadcastState();
+      return;
+    }
+    player.characterIndex = index;
+    this.message = `${player.name} selected ${CHARACTERS[index].name}.`;
+    const waiting = [...this.players.values()].some(p => !p.isBot && p.connected && p.characterIndex < 0);
+    if (!waiting && this.phase === "characterSelect") {
+      this.phase = "lobby";
+      this.autoSizeToHumans();
+      this.message = "Everyone has selected a player. Welcome back to the lobby.";
+    }
+    this.broadcastState();
+  }
+  private changePlayers() {
+    if (this.phase !== "finalResults") return;
+    this.clearAllTimers();
+    this.runtimes.clear();
+    this.spectatorMatchByViewer.clear();
+    for (const [id, player] of [...this.players.entries()]) {
+      if (player.isBot) this.players.delete(id);
+      else {
+        player.characterIndex = -1;
+        player.eliminated = false;
+        player.wins = 0;
+      }
+    }
+    this.bracket = [];
+    this.roundNumber = 0;
+    this.matchIndex = 0;
+    this.phase = "characterSelect";
+    this.autoSizeToHumans();
+    this.message = "Choose new players — first in, best dressed!";
+  }
+  private pickCharacterIndex(requested:number){const used=new Set([...this.players.values()].filter(p=>p.characterIndex>=0).map(p=>p.characterIndex));const safe=Number.isFinite(requested)?clamp(Math.floor(requested),0,CHARACTERS.length-1):0;if(!used.has(safe))return safe;for(let i=0;i<CHARACTERS.length;i++)if(!used.has(i))return i;return safe;}
+  private autoSizeToHumans(){if(this.phase!=="lobby"&&this.phase!=="characterSelect")return;const h=[...this.players.values()].filter(p=>!p.isBot).length;this.tournamentSize=nextTournamentSize(h);this.trimBotsToFit();}
   private setTournamentSize(size:number){const h=[...this.players.values()].filter(p=>!p.isBot).length;this.tournamentSize=TOURNAMENT_SIZES.find(n=>n===size&&n>=h)??nextTournamentSize(h);this.trimBotsToFit();this.fillBots();this.message=`Bracket set to ${this.tournamentSize}. Bots filled the remaining positions.`;}
   private trimBotsToFit(){const h=[...this.players.values()].filter(p=>!p.isBot).length;const bots=[...this.players.values()].filter(p=>p.isBot);while(bots.length>Math.max(0,this.tournamentSize-h)){const b=bots.pop();if(b)this.players.delete(b.id);}}
   private fillBots(){let h=[...this.players.values()].filter(p=>!p.isBot).length,b=[...this.players.values()].filter(p=>p.isBot).length;while(h+b<this.tournamentSize){this.addBot(false);b++;}}
   private addBot(announce=true){if(this.players.size>=this.tournamentSize)return;const ci=this.pickCharacterIndex(this.botCounter%CHARACTERS.length),ch=CHARACTERS[ci],id=`bot_${Date.now()}_${this.botCounter++}`;this.players.set(id,{id,sessionId:null,name:ch.name,characterIndex:ci,isBot:true,connected:true,eliminated:false,wins:0});if(announce)this.message=`${ch.name} entered as a bot.`;}
   private removeBot(id:string){const p=this.players.get(id);if(p?.isBot&&this.phase==="lobby"){this.players.delete(id);this.message=`${p.name} bot removed.`;}}
-  private removePlayer(id:string){const p=this.players.get(id);if(!p||this.phase!=="lobby"||id===this.hostId)return;this.players.delete(id);this.autoSizeToHumans();}
+  private removePlayer(id:string){const p=this.players.get(id);if(!p||(this.phase!=="lobby"&&this.phase!=="characterSelect")||id===this.hostId)return;this.players.delete(id);this.autoSizeToHumans();}
   private createMatch(round:number,matchNo:number,p1:string,p2:string):BracketMatch{return{id:`r${round}m${matchNo}_${Date.now()}_${Math.floor(Math.random()*9999)}`,round,matchNo,p1,p2,p1Score:0,p2Score:0,p1Shootout:0,p2Shootout:0,p1ShootoutTaken:0,p2ShootoutTaken:0,winnerId:null,loserId:null,events:[],status:"pending"};}
-  private startTournament(){if(this.phase!=="lobby")return;this.fillBots();const entrants=[...this.players.values()].slice(0,this.tournamentSize);if(entrants.length<2){this.message="Need at least 2 players.";return;}for(const p of this.players.values()){p.eliminated=!entrants.some(e=>e.id===p.id);p.wins=0;}this.bracket=[];this.roundNumber=1;const ids=shuffle(entrants.map(p=>p.id));for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));this.phase="tournament";this.message="First round matchups are ready. Host can begin Round 1.";}
+  private startTournament(){if(this.phase!=="lobby")return;if([...this.players.values()].some(p=>!p.isBot&&p.connected&&p.characterIndex<0)){this.message="Waiting for every human player to choose a character.";return;}this.fillBots();const entrants=[...this.players.values()].slice(0,this.tournamentSize);if(entrants.length<2){this.message="Need at least 2 players.";return;}for(const p of this.players.values()){p.eliminated=!entrants.some(e=>e.id===p.id);p.wins=0;}this.bracket=[];this.roundNumber=1;const ids=shuffle(entrants.map(p=>p.id));for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));this.phase="tournament";this.message="First round matchups are ready. Host can begin Round 1.";}
   private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
   private matchById(id:string){return this.bracket.find(m=>m.id===id)??null;}
   private autoResolveBotMatch(m:BracketMatch){m.status="playing";m.p1Score=Math.random()<.72?1:0;m.p2Score=Math.random()<.72?1:0;if(m.p1Score===m.p2Score){for(let i=0;i<5;i++){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}while(m.p1Shootout===m.p2Shootout){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}}const w=m.p1Score*10+m.p1Shootout>=m.p2Score*10+m.p2Shootout?m.p1:m.p2;this.markFinished(m,w,w===m.p1?m.p2:m.p1);}

@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import "./style.css";
 import { StartScene } from "./scenes/StartScene";
 import { LobbyScene } from "./scenes/LobbyScene";
+import { CharacterSelectScene } from "./scenes/CharacterSelectScene";
 import { TournamentScene } from "./scenes/TournamentScene";
 import { TackleScene } from "./scenes/TackleScene";
 import { PenaltyScene } from "./scenes/PenaltyScene";
@@ -24,7 +25,7 @@ const config: Phaser.Types.Core.GameConfig = {
   input: {
     activePointers: 3
   },
-  scene: [StartScene, LobbyScene, TournamentScene, TackleScene, PenaltyScene, RoundResultsScene, FinalResultsScene]
+  scene: [StartScene, CharacterSelectScene, LobbyScene, TournamentScene, TackleScene, PenaltyScene, RoundResultsScene, FinalResultsScene]
 };
 
 new Phaser.Game(config);

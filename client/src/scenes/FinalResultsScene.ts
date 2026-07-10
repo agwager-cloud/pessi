@@ -151,9 +151,9 @@ export class FinalResultsScene extends Phaser.Scene {
     if (Net.sessionId === state.hostId) {
       addButton(
         this,
-        W / 2 - 160,
+        W / 2 - 310,
         692,
-        272,
+        250,
         46,
         "BACK TO LOBBY",
         () => Net.send("backToLobby"),
@@ -161,9 +161,19 @@ export class FinalResultsScene extends Phaser.Scene {
       );
       addButton(
         this,
-        W / 2 + 160,
+        W / 2,
         692,
-        272,
+        250,
+        46,
+        "CHANGE PLAYERS",
+        () => Net.send("changePlayers"),
+        0x8a5a00,
+      );
+      addButton(
+        this,
+        W / 2 + 310,
+        692,
+        250,
         46,
         "PLAY AGAIN",
         () => Net.send("backToLobby"),

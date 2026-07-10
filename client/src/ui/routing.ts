@@ -4,12 +4,13 @@ import { playMusic, type MusicTrack } from "../audio/audio";
 
 
 function musicForPhase(phase: PublicState["phase"]): MusicTrack {
-  if (phase === "lobby") return "startLobby";
+  if (phase === "characterSelect" || phase === "lobby") return "startLobby";
   if (phase === "tackle" || phase === "penalty" || phase === "penaltyResult") return "penalty";
   return "results";
 }
 
 export function routeForPhase(phase: PublicState["phase"]): string {
+  if (phase === "characterSelect") return "CharacterSelectScene";
   if (phase === "lobby") return "LobbyScene";
   if (phase === "tournament" || phase === "roundLive") return "TournamentScene";
   if (phase === "tackle") return "TackleScene";

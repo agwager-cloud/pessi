@@ -68,12 +68,12 @@ class NetService {
     return () => this.handlers.delete(handler);
   }
 
-  async host(name: string, characterIndex: number) {
-    await this.connect({ host: "1", name, characterIndex: String(characterIndex) });
+  async host(name: string) {
+    await this.connect({ host: "1", name });
   }
 
-  async joinByCode(name: string, roomCode: string, characterIndex: number) {
-    await this.connect({ roomCode: roomCode.trim(), name, characterIndex: String(characterIndex) });
+  async joinByCode(name: string, roomCode: string) {
+    await this.connect({ roomCode: roomCode.trim(), name });
   }
 
   isUsingPublishedServer(): boolean {

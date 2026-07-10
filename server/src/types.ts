@@ -1,6 +1,6 @@
 import type { GoalZone } from "@pessi/shared";
 
-export type Phase = "lobby" | "tournament" | "roundLive" | "tackle" | "penalty" | "penaltyResult" | "roundResults" | "finalResults";
+export type Phase = "characterSelect" | "lobby" | "tournament" | "roundLive" | "tackle" | "penalty" | "penaltyResult" | "roundResults" | "finalResults";
 
 export type PlayerRecord = {
   id: string;

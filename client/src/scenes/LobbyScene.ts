@@ -292,6 +292,24 @@ export class LobbyScene extends Phaser.Scene {
       return;
     }
 
+    if (p.characterIndex < 0) {
+      const bg = this.add.rectangle(x, y, cardW, cardH, 0x3b3320, 0.82)
+        .setOrigin(0)
+        .setStrokeStyle(2, 0xffd21f, 0.55);
+      this.add.text(x + 18, y + cardH / 2 - 9, p.name, {
+        fontFamily: "Arial", fontSize: "16px", fontStyle: "900", color: "#ffffff",
+        stroke: "#000000", strokeThickness: 3
+      }).setOrigin(0, 0.5);
+      this.add.text(x + 18, y + cardH / 2 + 13, "Choosing a player...", {
+        fontFamily: "Arial", fontSize: "13px", fontStyle: "bold", color: "#fff2a6"
+      }).setOrigin(0, 0.5);
+      if (isHost && p.id !== state.hostId) {
+        bg.setInteractive({ useHandCursor: true });
+        bg.on("pointerdown", () => { this.selectedId = p.id; this.render(state); });
+      }
+      return;
+    }
+
     const ch = CHARACTERS[p.characterIndex] ?? CHARACTERS[0];
     const selected = p.id === this.selectedId;
     const primary = Phaser.Display.Color.HexStringToColor(ch.primary).color;
