@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { CHARACTERS } from "@pessi/shared";
 import { Net } from "../net/Net";
-import { preloadAudio, playMusic } from "../audio/audio";
+import { playWinnerAnnouncement, preloadAudio, playMusic } from "../audio/audio";
 import type { BracketMatch, PlayerRecord, PublicState } from "../types";
 import {
   addButton,
@@ -26,6 +26,7 @@ type Side = "left" | "right";
 
 export class FinalResultsScene extends Phaser.Scene {
   private unsub?: () => void;
+  private announcedWinnerId: string | null = null;
 
   constructor() {
     super("FinalResultsScene");
@@ -37,6 +38,7 @@ export class FinalResultsScene extends Phaser.Scene {
   }
 
   create() {
+    this.announcedWinnerId = null;
     playMusic(this, "results");
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.unsub?.());
     this.events.once(Phaser.Scenes.Events.DESTROY, () => this.unsub?.());
@@ -58,6 +60,7 @@ export class FinalResultsScene extends Phaser.Scene {
 
     const final = [...state.bracket].reverse().find((m) => m.winnerId);
     const champ = getPlayer(state, final?.winnerId ?? null);
+    this.playChampionAudioOnce(champ);
 
     this.add
       .text(W / 2, 82, "Pessi's Pens Champion", {
@@ -167,6 +170,13 @@ export class FinalResultsScene extends Phaser.Scene {
         0x0b5d33,
       );
     }
+  }
+
+  private playChampionAudioOnce(champ: PlayerRecord | null) {
+    if (!champ || this.announcedWinnerId === champ.id) return;
+    this.announcedWinnerId = champ.id;
+    const characterName = CHARACTERS[champ.characterIndex]?.name ?? champ.name;
+    void playWinnerAnnouncement(characterName);
   }
 
   private drawBackground() {

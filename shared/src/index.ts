@@ -66,7 +66,7 @@ export const CHARACTERS: Character[] = [
   { id: "vozinha_lasagna", name: "Vozinha-lasagna", country: "Cape Verde", number: 1, primary: "#1f63c8", secondary: "#ffffff", shorts: "#cf2027", skin: "#7d4b32", hair: "#17100c", beard: "#17100c" },
   { id: "neigh_mar", name: "Neigh-mar", country: "Brazil", number: 10, primary: "#1f9d55", secondary: "#ffd21f", shorts: "#1346a8", skin: "#9a6240", hair: "#20130e" },
   { id: "gooseman_dumbbelle", name: "Goose-man Dumbbell-e", country: "France", number: 7, primary: "#244ecf", secondary: "#ffffff", shorts: "#d22b2b", skin: "#6f422c", hair: "#15100d", beard: "#15100d" },
-  { id: "michael_old_lease", name: "Michael Old-lease", country: "France", number: 11, primary: "#244ecf", secondary: "#ffffff", shorts: "#d22b2b", skin: "#e2ad82", hair: "#7a4a25" }
+  { id: "michael_police", name: "Michael Police", country: "France", number: 11, primary: "#244ecf", secondary: "#ffffff", shorts: "#d22b2b", skin: "#e2ad82", hair: "#7a4a25" }
 ];
 
 export const TOURNAMENT_SIZES = [2, 4, 8, 16, 32] as const;

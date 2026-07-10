@@ -209,10 +209,10 @@ export function toggleSound(_scene: Phaser.Scene): boolean {
 // It plays short MP3 files from public/assets/audio over the top of the current
 // music using separate HTMLAudio elements.
 
-export type SfxChannel = "commentary" | "playerName" | "crowd" | "misc";
+export type SfxChannel = "commentary" | "playerName" | "crowd" | "winner" | "misc";
 export type CommentaryKind = "goal" | "save" | "miss" | "tackle";
 
-const SFX_VERSION = "v54";
+const SFX_VERSION = "v56";
 const SFX_COUNTS: Record<CommentaryKind, number> = {
   goal: 8,
   save: 8,
@@ -255,9 +255,6 @@ const PLAYER_NAME_FILE_OVERRIDES: Record<string, string> = {
   // Keep this filename ASCII-safe. Some browsers/build tools handle accented
   // filenames inconsistently once the game is zipped/uploaded.
   "MmmBop-pé": "MmmBop-pe.mp3",
-  // Uploaded file uses a capital L after the hyphen; keep the on-screen
-  // character name exactly as requested while playing the existing asset.
-  "Michael Old-lease": "Michael Old-Lease.mp3",
 };
 
 function audioAssetUrl(fileName: string): string {
@@ -317,6 +314,34 @@ export function playSfxFile(
   });
 
   return el;
+}
+
+function playSfxFileAndWait(
+  fileName: string,
+  options: { channel?: SfxChannel; volume?: number; playbackRate?: number; restartChannel?: boolean; maxWaitMs?: number } = {}
+): Promise<void> {
+  if (muted || typeof window === "undefined") return Promise.resolve();
+
+  const el = playSfxFile(fileName, options);
+  if (!el) return Promise.resolve();
+
+  const maxWaitMs = Math.max(600, options.maxWaitMs ?? 4200);
+  return new Promise((resolve) => {
+    let done = false;
+    let timer: number | undefined;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      el.removeEventListener("ended", finish);
+      el.removeEventListener("error", finish);
+      resolve();
+    };
+
+    el.addEventListener("ended", finish, { once: true });
+    el.addEventListener("error", finish, { once: true });
+    timer = window.setTimeout(finish, maxWaitMs);
+  });
 }
 
 function shuffleNumbers(values: number[]): number[] {
@@ -417,5 +442,35 @@ export function playPlayerName(playerCharacterName: string): HTMLAudioElement | 
     channel: "playerName",
     volume: 0.86,
     restartChannel: true,
+  });
+}
+
+export async function playWinnerAnnouncement(playerCharacterName: string): Promise<void> {
+  if (muted || typeof window === "undefined") return;
+
+  stopSfxChannel("winner");
+  stopSfxChannel("playerName");
+  stopSfxChannel("crowd");
+
+  const playerFileName = PLAYER_NAME_FILE_OVERRIDES[playerCharacterName] ?? `${playerCharacterName}.mp3`;
+  await playSfxFileAndWait("and the winner is.mp3", {
+    channel: "winner",
+    volume: 0.92,
+    restartChannel: true,
+    maxWaitMs: 3600,
+  });
+  await playSfxFileAndWait(playerFileName, {
+    channel: "winner",
+    volume: 0.90,
+    restartChannel: true,
+    maxWaitMs: 3600,
+  });
+
+  const crowdIndex = nextCrowdIndex("goal");
+  await playSfxFileAndWait(`crowdGoal${crowdIndex}.mp3`, {
+    channel: "crowd",
+    volume: 0.78,
+    restartChannel: true,
+    maxWaitMs: 5000,
   });
 }

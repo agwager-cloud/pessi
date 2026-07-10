@@ -18,6 +18,9 @@ export class StartScene extends Phaser.Scene {
   private errorText?: Phaser.GameObjects.Text;
   private nameDom?: Phaser.GameObjects.DOMElement;
   private codeDom?: Phaser.GameObjects.DOMElement;
+  private hostButton?: Phaser.GameObjects.Container;
+  private joinButton?: Phaser.GameObjects.Container;
+  private isConnecting = false;
 
   constructor() {
     super("StartScene");
@@ -53,8 +56,8 @@ export class StartScene extends Phaser.Scene {
     this.nameDom = this.add.dom(W / 2, 312).createFromHTML(inputHtml("Type your name"));
     this.codeDom = this.add.dom(W / 2, 362).createFromHTML(inputHtml("Room code to join"));
 
-    addButton(this, W / 2 - 116, 418, 196, 50, "HOST GAME", () => this.host(), 0x0b5d33);
-    addButton(this, W / 2 + 116, 418, 196, 50, "JOIN CODE", () => this.join(), 0x163c82);
+    this.hostButton = addButton(this, W / 2 - 116, 418, 196, 50, "HOST GAME", () => this.host(), 0x0b5d33);
+    this.joinButton = addButton(this, W / 2 + 116, 418, 196, 50, "JOIN CODE", () => this.join(), 0x163c82);
 
     this.characterText = this.add.text(W / 2, 528, "", {
       fontFamily: "Arial",
@@ -77,7 +80,7 @@ export class StartScene extends Phaser.Scene {
       stroke: "#000000",
       strokeThickness: 4,
       align: "center",
-      wordWrap: { width: 430 }
+      wordWrap: { width: 570 }
     }).setOrigin(0.5);
 
     addSoundToggle(this, W - 76, 40);
@@ -135,28 +138,57 @@ export class StartScene extends Phaser.Scene {
     return (input?.value ?? "").trim();
   }
 
+  private setConnecting(value: boolean) {
+    this.isConnecting = value;
+    this.hostButton?.setAlpha(value ? 0.45 : 1);
+    this.joinButton?.setAlpha(value ? 0.45 : 1);
+    this.setDomInputsDisabled(value);
+  }
+
+  private setDomInputsDisabled(value: boolean) {
+    const inputs = [this.nameDom, this.codeDom]
+      .map((dom) => dom?.node.querySelector("input") as HTMLInputElement | null)
+      .filter((input): input is HTMLInputElement => Boolean(input));
+    inputs.forEach((input) => {
+      input.disabled = value;
+      input.style.opacity = value ? "0.72" : "1";
+    });
+  }
+
+  private connectingMessage(action: "host" | "join"): string {
+    const verb = action === "host" ? "Creating room" : "Joining room";
+    if (!Net.isUsingPublishedServer()) return `${verb}...`;
+    return `${verb}... waking up the free online server. This can take up to 60 seconds. Please wait — buttons are locked.`;
+  }
+
   private async host() {
+    if (this.isConnecting) return;
+    this.setConnecting(true);
     try {
-      this.errorText?.setText("Creating room...");
+      this.errorText?.setText(this.connectingMessage("host"));
       await Net.host(this.getName(), this.characterIndex);
       this.scene.start("LobbyScene");
     } catch (err) {
       this.errorText?.setText(`Could not host: ${(err as Error).message}`);
+      this.setConnecting(false);
     }
   }
 
   private async join() {
+    if (this.isConnecting) return;
     try {
       const code = this.getCode();
       if (!code) {
         this.errorText?.setText("Type a room code first.");
         return;
       }
-      this.errorText?.setText("Joining room...");
+      this.setConnecting(true);
+      this.errorText?.setText(this.connectingMessage("join"));
       await Net.joinByCode(this.getName(), code, this.characterIndex);
       this.scene.start("LobbyScene");
     } catch (err) {
       this.errorText?.setText(`Could not join: ${(err as Error).message}`);
+      this.setConnecting(false);
     }
   }
 }

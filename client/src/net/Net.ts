@@ -49,6 +49,11 @@ function websocketUrl(): string {
   return `ws://${host}:2567/ws`;
 }
 
+function isPublishedConnection(): boolean {
+  const host = window.location.hostname;
+  return !(host === "localhost" || host === "127.0.0.1" || isPrivateLanHost(host));
+}
+
 type StateHandler = (state: PublicState) => void;
 
 class NetService {
@@ -69,6 +74,10 @@ class NetService {
 
   async joinByCode(name: string, roomCode: string, characterIndex: number) {
     await this.connect({ roomCode: roomCode.trim(), name, characterIndex: String(characterIndex) });
+  }
+
+  isUsingPublishedServer(): boolean {
+    return isPublishedConnection();
   }
 
   send(type: string, data?: unknown) {
@@ -94,10 +103,10 @@ class NetService {
       const timeout = window.setTimeout(() => {
         if (!settled) {
           settled = true;
-          reject(new Error("Connection timed out"));
+          reject(new Error(isPublishedConnection() ? "The free online server is still waking up. Please try again in a moment." : "Connection timed out"));
           ws.close();
         }
-      }, 8000);
+      }, isPublishedConnection() ? 75000 : 12000);
 
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
