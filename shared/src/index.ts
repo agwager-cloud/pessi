@@ -62,7 +62,7 @@ export const CHARACTERS: Character[] = [
   { id: "keyboard_spaghetti", name: "Keyboard Kvarat-spaghetti", country: "Georgia", number: 7, primary: "#ffffff", secondary: "#ff0000", shorts: "#111111", skin: "#e1ad82", hair: "#2a180f" },
   { id: "raffy_lizardo", name: "Raffy Lizard-o", country: "Portugal", number: 17, primary: "#006600", secondary: "#ff0000", shorts: "#b8860b", skin: "#d8a070", hair: "#22140e" },
   { id: "william_saliva", name: "William Saliva", country: "France", number: 4, primary: "#244ecf", secondary: "#ffffff", shorts: "#d22b2b", skin: "#8a5a3b", hair: "#15100d" },
-  { id: "micdrop_mayo", name: "Mic-drop Mayonnaise", country: "France", number: 1, primary: "#244ecf", secondary: "#ffffff", shorts: "#d22b2b", skin: "#4a2c1f", hair: "#120d0a" },
+  { id: "micdrop_mayo", name: "Mic-drop Mayonnaise", country: "France", number: 16, primary: "#244ecf", secondary: "#ffffff", shorts: "#d22b2b", skin: "#4a2c1f", hair: "#120d0a" },
   { id: "vozinha_lasagna", name: "Vozinha-lasagna", country: "Cape Verde", number: 1, primary: "#1f63c8", secondary: "#ffffff", shorts: "#cf2027", skin: "#7d4b32", hair: "#17100c", beard: "#17100c" },
   { id: "neigh_mar", name: "Neigh-mar", country: "Brazil", number: 10, primary: "#1f9d55", secondary: "#ffd21f", shorts: "#1346a8", skin: "#9a6240", hair: "#20130e" },
   { id: "gooseman_dumbbelle", name: "Goose-man Dumbbell-e", country: "France", number: 7, primary: "#244ecf", secondary: "#ffffff", shorts: "#d22b2b", skin: "#6f422c", hair: "#15100d", beard: "#15100d" },

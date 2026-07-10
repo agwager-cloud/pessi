@@ -10,6 +10,8 @@ const GOAL = { x: 256, y: 142, w: 768, h: 278 };
 const PENALTY_SPOT = { x: W / 2, y: 570 };
 const POWER_BAR = { x: 54, y: 652, w: 332, h: 28 };
 const BOT_SHOT_SECONDS = 5;
+const DEFAULT_AIM_X = 0.5;
+const DEFAULT_AIM_Y = 0.75;
 
 const ZONE_LABELS: Record<GoalZone, string> = {
   TL: "TOP LEFT",
@@ -94,8 +96,8 @@ function playerDetail(player: PlayerRecord | null): { name: string; silly: strin
 export class PenaltyScene extends Phaser.Scene {
   private unsub?: () => void;
   private state: PublicState | null = null;
-  private aimX = 0.5;
-  private aimY = 0.34;
+  private aimX = DEFAULT_AIM_X;
+  private aimY = DEFAULT_AIM_Y;
   private power = 50;
   private powerDir = 1;
   private kickButton?: Phaser.GameObjects.Container;
@@ -105,6 +107,7 @@ export class PenaltyScene extends Phaser.Scene {
   private resultAnimationStartedAt = 0;
   private completedResultFrameKey: string | null = null;
   private soundPlayedForShotKey: string | null = null;
+  private lastAimPenaltyKey: string | null = null;
 
   private aimOuter?: Phaser.GameObjects.Arc;
   private aimInner?: Phaser.GameObjects.Arc;
@@ -192,6 +195,7 @@ export class PenaltyScene extends Phaser.Scene {
     this.completedResultFrameKey = null;
     this.resultObjectsKey = null;
     this.soundPlayedForShotKey = null;
+    this.lastAimPenaltyKey = null;
     stopSfxChannel("commentary");
     stopSfxChannel("crowd");
   }
@@ -248,7 +252,17 @@ export class PenaltyScene extends Phaser.Scene {
     return Boolean(key && this.kickSentForPenalty === key);
   }
 
+  private resetDefaultAimForNewPenalty(state: PublicState) {
+    if (state.phase !== "penalty" || !state.activePenalty) return;
+    const key = this.penaltyKey(state);
+    if (!key || key === this.lastAimPenaltyKey) return;
+    this.lastAimPenaltyKey = key;
+    this.aimX = DEFAULT_AIM_X;
+    this.aimY = DEFAULT_AIM_Y;
+  }
+
   private render(state: PublicState) {
+    this.resetDefaultAimForNewPenalty(state);
     this.clearSceneDisplay();
     this.drawPenaltyBoxBackground();
 

@@ -452,25 +452,38 @@ export async function playWinnerAnnouncement(playerCharacterName: string): Promi
   stopSfxChannel("playerName");
   stopSfxChannel("crowd");
 
-  const playerFileName = PLAYER_NAME_FILE_OVERRIDES[playerCharacterName] ?? `${playerCharacterName}.mp3`;
-  await playSfxFileAndWait("and the winner is.mp3", {
-    channel: "winner",
-    volume: 0.92,
-    restartChannel: true,
-    maxWaitMs: 3600,
-  });
-  await playSfxFileAndWait(playerFileName, {
-    channel: "winner",
-    volume: 0.90,
-    restartChannel: true,
-    maxWaitMs: 3600,
-  });
+  // Hotfix 57: make the final announcement stand out. The SFX are at/near
+  // full volume and the results background music ducks briefly underneath the
+  // sequence, then restores afterwards.
+  const shouldDuckMusic = Boolean(audio && !audio.paused && !muted);
+  const restoreVolume = desiredTrack ? VOLUMES[desiredTrack] : (audio?.volume ?? 0);
+  if (shouldDuckMusic) await fadeTo(Math.min(audio?.volume ?? 0.24, 0.24), 140);
 
-  const crowdIndex = nextCrowdIndex("goal");
-  await playSfxFileAndWait(`crowdGoal${crowdIndex}.mp3`, {
-    channel: "crowd",
-    volume: 0.78,
-    restartChannel: true,
-    maxWaitMs: 5000,
-  });
+  try {
+    const playerFileName = PLAYER_NAME_FILE_OVERRIDES[playerCharacterName] ?? `${playerCharacterName}.mp3`;
+    await playSfxFileAndWait("and the winner is.mp3", {
+      channel: "winner",
+      volume: 1.0,
+      restartChannel: true,
+      maxWaitMs: 3600,
+    });
+    await playSfxFileAndWait(playerFileName, {
+      channel: "winner",
+      volume: 1.0,
+      restartChannel: true,
+      maxWaitMs: 3600,
+    });
+
+    const crowdIndex = nextCrowdIndex("goal");
+    await playSfxFileAndWait(`crowdGoal${crowdIndex}.mp3`, {
+      channel: "crowd",
+      volume: 0.96,
+      restartChannel: true,
+      maxWaitMs: 5000,
+    });
+  } finally {
+    if (shouldDuckMusic && !muted && desiredTrack) {
+      await fadeTo(restoreVolume, 260);
+    }
+  }
 }
