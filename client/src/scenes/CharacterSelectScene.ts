@@ -59,7 +59,6 @@ export class CharacterSelectScene extends Phaser.Scene {
       this.confirmedIndex = me.characterIndex;
       this.pendingIndex = null;
       this.selectedIndex = null;
-      playPlayerName(CHARACTERS[me.characterIndex]?.name ?? me.name);
     }
     if (me && me.characterIndex < 0 && this.pendingIndex !== null) {
       const takenByOther = state.players.some((p) => p.id !== me.id && p.characterIndex === this.pendingIndex);
@@ -191,12 +190,15 @@ export class CharacterSelectScene extends Phaser.Scene {
         eliminated: false,
         wins: 0
       };
-      const footballer = drawFootballer(this, 0, -24, fakePlayer, 0.39, false);
+      // Keep the sprite slightly higher so the lower third of every card is
+      // reserved exclusively for the name and country/jersey labels.
+      const footballer = drawFootballer(this, 0, -30, fakePlayer, 0.36, false);
       card.add(footballer);
 
-      // Dedicated name and country zones prevent the labels from colliding.
-      const nameSize = character.name.length > 18 ? 10 : character.name.length > 14 ? 11 : 12;
-      card.add(this.add.text(0, 18, character.name, {
+      // Hotfix 66: use two non-overlapping text bands. Long names may wrap to
+      // two lines, but the country/jersey line always remains in its own band.
+      const nameSize = character.name.length > 20 ? 9 : character.name.length > 16 ? 10 : 11;
+      card.add(this.add.text(0, 10, character.name, {
         fontFamily: "Arial",
         fontSize: `${nameSize}px`,
         fontStyle: "900",
@@ -204,19 +206,20 @@ export class CharacterSelectScene extends Phaser.Scene {
         stroke: "#000000",
         strokeThickness: 3,
         align: "center",
-        wordWrap: { width: cardW - 10, useAdvancedWrap: true },
-        fixedWidth: cardW - 8,
-        fixedHeight: 30
+        lineSpacing: -1,
+        wordWrap: { width: cardW - 12, useAdvancedWrap: true },
+        fixedWidth: cardW - 10,
+        fixedHeight: 28
       }).setOrigin(0.5, 0));
-      card.add(this.add.text(0, cardH / 2 - 13, `${character.country}  #${character.number}`, {
+      card.add(this.add.text(0, cardH / 2 - 8, `${character.country}  #${character.number}`, {
         fontFamily: "Arial",
-        fontSize: "10px",
+        fontSize: "9px",
         fontStyle: "bold",
         color: "#fff2a6",
         stroke: "#000000",
         strokeThickness: 2,
         align: "center",
-        fixedWidth: cardW - 8
+        fixedWidth: cardW - 10
       }).setOrigin(0.5));
 
       if (taken || pending) {
@@ -258,6 +261,9 @@ export class CharacterSelectScene extends Phaser.Scene {
         bg.on("pointerout", () => bg.setStrokeStyle(locallySelected ? 4 : 2, locallySelected ? 0xffd21f : 0xffffff, locallySelected ? 1 : 0.32));
         bg.on("pointerdown", () => {
           this.selectedIndex = index;
+          // Preview the commentator name immediately when the card is chosen.
+          // The confirm action now only reserves the player and does not replay it.
+          playPlayerName(character.name);
           this.render(state);
         });
       }

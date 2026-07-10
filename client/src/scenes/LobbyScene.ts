@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { CHARACTERS, TOURNAMENT_SIZES } from "@pessi/shared";
 import { Net } from "../net/Net";
-import { preloadAudio, playMusic } from "../audio/audio";
+import { preloadAudio, playMusic, stopSfxChannel } from "../audio/audio";
 import type { PlayerRecord, PublicState } from "../types";
 import { addButton, addTopBar, H, W } from "../ui/ui";
 import { routeScene } from "../ui/routing";
@@ -29,6 +29,9 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   create() {
+    // Character-name previews belong only to CharacterSelectScene. Stop any
+    // remaining preview as soon as the lobby opens.
+    stopSfxChannel("playerName");
     playMusic(this, "startLobby");
     const cleanup = () => {
       this.unsub?.();
