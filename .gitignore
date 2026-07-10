@@ -9,3 +9,5 @@ build/
 client/dist/
 server/dist/
 shared/dist/
+# Packaged ZIP files
+*.zip
