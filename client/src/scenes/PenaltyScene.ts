@@ -275,7 +275,11 @@ export class PenaltyScene extends Phaser.Scene {
     const isGoalie = goalieId === Net.sessionId && state.phase === "penalty";
     const kickerIsBot = !!kicker?.isBot;
 
-    addTopBar(this, state, this.topMessage(state, kicker, goalie));
+    addTopBar(this, state, state.isSpectating ? `LIVE SPECTATOR • ${this.topMessage(state, kicker, goalie)}` : this.topMessage(state, kicker, goalie));
+    if (state.isSpectating) {
+      addButton(this, 112, 103, 190, 44, "← BRACKET", () => Net.send("stopWatching"), 0x115b96);
+      this.add.text(W - 120, 102, "LIVE SPECTATOR", { fontFamily: "Arial", fontSize: "18px", fontStyle: "900", color: "#7dff9b", stroke: "#000000", strokeThickness: 4 }).setOrigin(0.5);
+    }
     this.drawShotHeader(state, kicker, goalie);
     this.drawPenaltyGoal();
     this.drawZones(state);

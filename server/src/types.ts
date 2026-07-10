@@ -80,6 +80,8 @@ export type PublicState = {
   players: PlayerRecord[];
   bracket: BracketMatch[];
   activeMatchId: string | null;
+  isSpectating: boolean;
+  liveMatchIds: string[];
   activePenalty: ActivePenalty | null;
   tackle: TackleState | null;
   lastShot: ShotEvent | null;

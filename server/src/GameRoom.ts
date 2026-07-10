@@ -126,6 +126,7 @@ export class GameRoom {
   private botCounter = 1;
   private tick: NodeJS.Timeout;
   private runtimes = new Map<string, MatchRuntime>();
+  private spectatorMatchByViewer = new Map<string, string>();
 
   constructor(roomCode: string) { this.roomCode = roomCode; this.tick = setInterval(() => this.update(), 100); }
   join(client: ClientSocket, options: JoinOptions) {
@@ -138,6 +139,7 @@ export class GameRoom {
     this.autoSizeToHumans(); this.message = `${this.nameOf(client.sessionId)} joined the chaos.`; this.broadcastState();
   }
   leave(sessionId: string) {
+    this.spectatorMatchByViewer.delete(sessionId);
     this.clients.delete(sessionId); const p=this.players.get(sessionId);
     if (p) { p.connected=false; p.sessionId=null; if(this.phase==="lobby") this.players.delete(sessionId); }
     if(this.hostId===sessionId) this.hostId=[...this.players.values()].find(p=>!p.isBot&&p.connected)?.id??null;
@@ -156,17 +158,35 @@ export class GameRoom {
     else if(type==="move") this.handleMove(client,data);
     else if(type==="goaliePick") this.handleGoaliePick(client,String(data) as GoalZone);
     else if(type==="shoot") this.handleShoot(client,data);
+    else if(type==="watchMatch") this.watchMatch(client,String(data??""));
+    else if(type==="stopWatching") this.stopWatching(client);
     else if(type==="nextRound") this.hostOnly(client,()=>this.nextRoundFromResults());
     else if(type==="backToLobby") this.hostOnly(client,()=>this.backToLobby());
   }
   private hostOnly(c:ClientSocket,fn:()=>void){ if(c.sessionId!==this.hostId)return; fn(); this.broadcastState(); }
   private runtimeForPlayer(id:string):MatchRuntime|null { return [...this.runtimes.values()].find(r=>{const m=this.matchById(r.matchId);return m&&(m.p1===id||m.p2===id);})??null; }
+  private runtimeForViewer(id:string):{runtime:MatchRuntime|null;isSpectating:boolean} {
+    const own=this.runtimeForPlayer(id);
+    if(own)return {runtime:own,isSpectating:false};
+    const watchedId=this.spectatorMatchByViewer.get(id);
+    const watched=watchedId?this.runtimes.get(watchedId)??null:null;
+    if(!watched&&watchedId)this.spectatorMatchByViewer.delete(id);
+    return {runtime:watched,isSpectating:!!watched};
+  }
+  private watchMatch(c:ClientSocket,matchId:string){
+    if(this.runtimeForPlayer(c.sessionId))return;
+    if(!this.runtimes.has(matchId))return;
+    this.spectatorMatchByViewer.set(c.sessionId,matchId);
+    this.broadcastState();
+  }
+  private stopWatching(c:ClientSocket){this.spectatorMatchByViewer.delete(c.sessionId);this.broadcastState();}
   private publicState(viewerId?:string):PublicState {
-    const r=viewerId?this.runtimeForPlayer(viewerId):null;
+    const view=viewerId?this.runtimeForViewer(viewerId):{runtime:null,isSpectating:false};
+    const r=view.runtime;
     const visiblePenalty=r?.activePenalty?{...r.activePenalty,goaliePick:viewerId===r.activePenalty.goalieId?r.activePenalty.goaliePick:null}:null;
     const viewerPhase = r ? r.phase : this.phase;
     const liveCount=this.runtimes.size;
-    return { roomCode:this.roomCode,hostId:this.hostId,phase:viewerPhase,tournamentSize:this.tournamentSize,players:[...this.players.values()].sort((a,b)=>a.name.localeCompare(b.name)),bracket:this.bracket,activeMatchId:r?.matchId??null,activePenalty:visiblePenalty,tackle:r?.tackle??null,lastShot:r?.lastShot??null,roundNumber:this.roundNumber,matchIndex:r?this.matchById(r.matchId)?.matchNo??0:this.matchIndex,message:r?.message??(this.phase==="roundLive"?`Round ${this.roundNumber} is live • ${liveCount} human match${liveCount===1?"":"es"} still playing.`:this.message)};
+    return { roomCode:this.roomCode,hostId:this.hostId,phase:viewerPhase,tournamentSize:this.tournamentSize,players:[...this.players.values()].sort((a,b)=>a.name.localeCompare(b.name)),bracket:this.bracket,activeMatchId:r?.matchId??null,isSpectating:view.isSpectating,liveMatchIds:[...this.runtimes.keys()],activePenalty:visiblePenalty,tackle:r?.tackle??null,lastShot:r?.lastShot??null,roundNumber:this.roundNumber,matchIndex:r?this.matchById(r.matchId)?.matchNo??0:this.matchIndex,message:r?.message??(this.phase==="roundLive"?`Round ${this.roundNumber} is live • ${liveCount} human match${liveCount===1?"":"es"} still playing.`:this.message)};
   }
   private broadcastState(){ for(const c of this.clients.values()) if(c.ws.readyState===c.ws.OPEN)c.ws.send(JSON.stringify({type:"state",data:this.publicState(c.sessionId)})); }
   private pickCharacterIndex(requested:number){const used=new Set([...this.players.values()].map(p=>p.characterIndex));const safe=Number.isFinite(requested)?clamp(Math.floor(requested),0,CHARACTERS.length-1):0;if(!used.has(safe))return safe;for(let i=0;i<CHARACTERS.length;i++)if(!used.has(i))return i;return safe;}
@@ -179,7 +199,7 @@ export class GameRoom {
   private removePlayer(id:string){const p=this.players.get(id);if(!p||this.phase!=="lobby"||id===this.hostId)return;this.players.delete(id);this.autoSizeToHumans();}
   private createMatch(round:number,matchNo:number,p1:string,p2:string):BracketMatch{return{id:`r${round}m${matchNo}_${Date.now()}_${Math.floor(Math.random()*9999)}`,round,matchNo,p1,p2,p1Score:0,p2Score:0,p1Shootout:0,p2Shootout:0,p1ShootoutTaken:0,p2ShootoutTaken:0,winnerId:null,loserId:null,events:[],status:"pending"};}
   private startTournament(){if(this.phase!=="lobby")return;this.fillBots();const entrants=[...this.players.values()].slice(0,this.tournamentSize);if(entrants.length<2){this.message="Need at least 2 players.";return;}for(const p of this.players.values()){p.eliminated=!entrants.some(e=>e.id===p.id);p.wins=0;}this.bracket=[];this.roundNumber=1;const ids=shuffle(entrants.map(p=>p.id));for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));this.phase="tournament";this.message="First round matchups are ready. Host can begin Round 1.";}
-  private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
+  private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
   private matchById(id:string){return this.bracket.find(m=>m.id===id)??null;}
   private autoResolveBotMatch(m:BracketMatch){m.status="playing";m.p1Score=Math.random()<.72?1:0;m.p2Score=Math.random()<.72?1:0;if(m.p1Score===m.p2Score){for(let i=0;i<5;i++){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}while(m.p1Shootout===m.p2Shootout){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}}const w=m.p1Score*10+m.p1Shootout>=m.p2Score*10+m.p2Shootout?m.p1:m.p2;this.markFinished(m,w,w===m.p1?m.p2:m.p1);}
   private startTackle(r:MatchRuntime,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now();r.phase="tackle";r.activePenalty=null;r.lastShot=null;r.tackle={kickerId,goalieId,kickerX:310,kickerY:360,goalieX:970,goalieY:360,tackleText:randomFrom(TACKLE_LINES),startedAt:now,timeoutAt:now+7200,impactAt:null};r.message=`${this.nameOf(goalieId)} is approaching for a ${r.tackle.tackleText}!`;}
@@ -195,11 +215,11 @@ export class GameRoom {
   private afterShot(r:MatchRuntime,m:BracketMatch){const regular=m.events.filter(e=>e.mode==="regular").length;if(regular===1){this.startTackle(r,m.p2,m.p1);return;}if(regular===2&&m.p1Score!==m.p2Score){const w=m.p1Score>m.p2Score?m.p1:m.p2;this.finishMatch(r,m,w,w===m.p1?m.p2:m.p1);return;}const w=this.shootoutWinner(m);if(w){this.finishMatch(r,m,w,w===m.p1?m.p2:m.p1);return;}const k=m.p1ShootoutTaken===m.p2ShootoutTaken?m.p1:m.p2;this.startPenalty(r,"shootout",k,k===m.p1?m.p2:m.p1);}
   private shootoutWinner(m:BracketMatch):string|null{const a=m.p1ShootoutTaken,b=m.p2ShootoutTaken,ag=m.p1Shootout,bg=m.p2Shootout;if(a<=5&&b<=5){if(!canTeamStillCatch(a,ag,bg))return m.p2;if(!canTeamStillCatch(b,bg,ag))return m.p1;if(a===5&&b===5&&ag!==bg)return ag>bg?m.p1:m.p2;return null;}return a===b&&ag!==bg?(ag>bg?m.p1:m.p2):null;}
   private markFinished(m:BracketMatch,w:string,l:string){m.winnerId=w;m.loserId=l;m.status="done";const wp=this.players.get(w),lp=this.players.get(l);if(wp)wp.wins++;if(lp)lp.eliminated=true;}
-  private finishMatch(r:MatchRuntime,m:BracketMatch,w:string,l:string){this.markFinished(m,w,l);r.message=`${this.nameOf(w)} advances! ${this.nameOf(l)} joins the spectator choir.`;r.phase="penaltyResult";r.activePenalty=null;r.tackle=null;r.timer=setTimeout(()=>{this.runtimes.delete(m.id);this.checkRoundComplete();this.broadcastState();},900);}
+  private finishMatch(r:MatchRuntime,m:BracketMatch,w:string,l:string){this.markFinished(m,w,l);r.message=`${this.nameOf(w)} advances! ${this.nameOf(l)} joins the spectator choir.`;r.phase="penaltyResult";r.activePenalty=null;r.tackle=null;r.timer=setTimeout(()=>{this.runtimes.delete(m.id);for(const [viewer,watched] of this.spectatorMatchByViewer)if(watched===m.id)this.spectatorMatchByViewer.delete(viewer);this.checkRoundComplete();this.broadcastState();},900);}
   private checkRoundComplete(){if(this.runtimes.size>0)return;const pending=this.bracket.some(m=>m.round===this.roundNumber&&m.status!=="done");if(pending)return;this.phase=this.isTournamentDone()?"finalResults":"roundResults";this.message=this.phase==="finalResults"?"Tournament complete!":"Round complete. Host can start the next round.";}
   private nextRoundFromResults(){if(this.phase!=="roundResults")return;const winners=this.bracket.filter(m=>m.round===this.roundNumber).map(m=>m.winnerId).filter((x):x is string=>!!x);if(winners.length<=1){this.phase="finalResults";return;}this.roundNumber++;for(let i=0;i<winners.length;i+=2)this.bracket.push(this.createMatch(this.roundNumber,i/2+1,winners[i],winners[i+1]));this.phase="tournament";this.message=`Round ${this.roundNumber} matchups are ready. Host can begin the round.`;}
   private isTournamentDone(){const active=[...this.players.values()].filter(p=>!p.eliminated&&this.bracket.some(m=>m.p1===p.id||m.p2===p.id));return active.length===1&&this.bracket.some(m=>m.status==="done");}
-  private backToLobby(){this.clearAllTimers();this.runtimes.clear();this.phase="lobby";this.bracket=[];this.roundNumber=0;for(const p of this.players.values())p.eliminated=false;this.autoSizeToHumans();this.message="Back in the lobby. Ankles reset.";}
+  private backToLobby(){this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();this.phase="lobby";this.bracket=[];this.roundNumber=0;for(const p of this.players.values())p.eliminated=false;this.autoSizeToHumans();this.message="Back in the lobby. Ankles reset.";}
   private clearRuntimeTimer(r:MatchRuntime){if(r.timer){clearTimeout(r.timer);r.timer=null;}}
   private clearAllTimers(){for(const r of this.runtimes.values())this.clearRuntimeTimer(r);}
   private nameOf(id:string){return this.players.get(id)?.name??"Mystery Player";}

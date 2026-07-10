@@ -3,7 +3,7 @@ import type Phaser from "phaser";
 export type MusicTrack = "startLobby" | "penalty" | "results";
 
 const STORAGE_KEY = "pessiSoundMuted";
-const AUDIO_VERSION = "v46";
+const AUDIO_VERSION = "v60";
 const FADE_MS = 450;
 
 const MUSIC_FILES: Record<MusicTrack, string> = {
@@ -24,6 +24,7 @@ let desiredTrack: MusicTrack | null = null;
 let muted = readMutedSetting();
 let listenersInstalled = false;
 let fadeTimer: number | undefined;
+let fadeResolve: (() => void) | null = null;
 let pendingSwitch = false;
 let switching = false;
 
@@ -58,11 +59,27 @@ function getAudio(): HTMLAudioElement {
   return audio;
 }
 
+function isAudioSourceForTrack(el: HTMLAudioElement, track: MusicTrack): boolean {
+  const expectedFile = MUSIC_FILES[track].split("?")[0];
+  try {
+    return new URL(el.src, window.location.href).pathname.endsWith(expectedFile);
+  } catch {
+    return el.src.includes(expectedFile);
+  }
+}
+
 function clearFade() {
   if (fadeTimer !== undefined) {
     window.clearInterval(fadeTimer);
     fadeTimer = undefined;
   }
+  // Important: a new fade can interrupt an old one (for example, the winner
+  // announcement ducking the music while a penalty -> results crossfade is
+  // still running). Resolve the cancelled fade so the music switch state
+  // machine cannot remain permanently stuck in `switching = true`.
+  const resolve = fadeResolve;
+  fadeResolve = null;
+  resolve?.();
 }
 
 function fadeTo(targetVolume: number, duration = FADE_MS): Promise<void> {
@@ -77,12 +94,17 @@ function fadeTo(targetVolume: number, duration = FADE_MS): Promise<void> {
 
   const started = performance.now();
   return new Promise((resolve) => {
+    fadeResolve = resolve;
     fadeTimer = window.setInterval(() => {
       const t = Math.min(1, (performance.now() - started) / duration);
       const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
       el.volume = from + (targetVolume - from) * eased;
       if (t >= 1) {
-        clearFade();
+        // Resolve this fade directly before clearing its bookkeeping, so a
+        // later fade cannot accidentally resolve the wrong promise.
+        fadeResolve = null;
+        if (fadeTimer !== undefined) window.clearInterval(fadeTimer);
+        fadeTimer = undefined;
         el.volume = targetVolume;
         resolve();
       }
@@ -125,7 +147,7 @@ async function applyDesiredTrack(immediate = false) {
         await fadeTo(0, immediate ? 0 : 180);
         el.pause();
         currentTrack = null;
-      } else if (currentTrack !== track) {
+      } else if (currentTrack !== track || !isAudioSourceForTrack(el, track)) {
         await fadeTo(0, currentTrack ? FADE_MS : 0);
         el.pause();
         el.src = MUSIC_FILES[track];
@@ -172,7 +194,8 @@ export function preloadAudio(_scene: Phaser.Scene) {
 
 export function playMusic(_scene: Phaser.Scene, track: MusicTrack) {
   installUnlockListeners();
-  if (desiredTrack === track && currentTrack === track && !muted) return;
+  const el = getAudio();
+  if (desiredTrack === track && currentTrack === track && isAudioSourceForTrack(el, track) && !muted) return;
   desiredTrack = track;
   void applyDesiredTrack(!currentTrack);
 }
@@ -212,7 +235,7 @@ export function toggleSound(_scene: Phaser.Scene): boolean {
 export type SfxChannel = "commentary" | "playerName" | "crowd" | "winner" | "misc";
 export type CommentaryKind = "goal" | "save" | "miss" | "tackle";
 
-const SFX_VERSION = "v56";
+const SFX_VERSION = "v60";
 const SFX_COUNTS: Record<CommentaryKind, number> = {
   goal: 8,
   save: 8,
@@ -434,6 +457,24 @@ export function playRandomCrowd(kind: CommentaryKind): HTMLAudioElement | null {
     volume: kind === "goal" ? 0.72 : kind === "tackle" ? 0.62 : 0.66,
     restartChannel: true,
   });
+}
+
+export async function playTackleImpactSequence(): Promise<void> {
+  if (muted || typeof window === "undefined") return;
+
+  // Hotfix 61: the referee whistle and crowd reaction fire together at the
+  // exact tackle impact. The shuffled commentary follows immediately after
+  // the whistle finishes so the spoken line remains clear and readable.
+  playRandomCrowd("tackle");
+  await playSfxFileAndWait("whistle.mp3", {
+    channel: "misc",
+    volume: 0.96,
+    restartChannel: true,
+    maxWaitMs: 2600,
+  });
+
+  if (muted) return;
+  playRandomCommentary("tackle");
 }
 
 export function playPlayerName(playerCharacterName: string): HTMLAudioElement | null {

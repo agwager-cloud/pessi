@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { CHARACTERS, type Character } from "@pessi/shared";
 import { Net } from "../net/Net";
-import { playMusic, playRandomCommentary, playRandomCrowd, preloadAudio, stopSfxChannel } from "../audio/audio";
+import { playMusic, playTackleImpactSequence, preloadAudio, stopSfxChannel } from "../audio/audio";
 import type { PlayerRecord, PublicState } from "../types";
 import { addButton, addTopBar, drawFootballer, drawPitch, getPlayer, playerLabel, W, H } from "../ui/ui";
 import { routeScene } from "../ui/routing";
@@ -704,6 +704,7 @@ export class TackleScene extends Phaser.Scene {
     this.soundPlayedForTackleImpactKey = null;
     stopSfxChannel("commentary");
     stopSfxChannel("crowd");
+    stopSfxChannel("misc");
   }
 
   private playTackleCommentaryOnce(tackle: NonNullable<PublicState["tackle"]>) {
@@ -711,11 +712,9 @@ export class TackleScene extends Phaser.Scene {
     if (this.soundPlayedForTackleImpactKey === key) return;
     this.soundPlayedForTackleImpactKey = key;
 
-    this.time.delayedCall(260, () => {
-      if (!this.scene.isActive("TackleScene")) return;
-      playRandomCrowd("tackle");
-      playRandomCommentary("tackle");
-    });
+    // Hotfix 61 sequence: whistle and random crowd reaction together at
+    // impact, followed by the random tackle commentary after the whistle.
+    void playTackleImpactSequence();
   }
 
   private render(state: PublicState) {
@@ -723,7 +722,11 @@ export class TackleScene extends Phaser.Scene {
     [...this.children.list].forEach((child) => child.destroy());
     drawPitch(this);
     const t = state.tackle;
-    addTopBar(this, state, state.message);
+    addTopBar(this, state, state.isSpectating ? `LIVE SPECTATOR • ${state.message}` : state.message);
+    if (state.isSpectating) {
+      addButton(this, 112, 103, 190, 44, "← BRACKET", () => Net.send("stopWatching"), 0x115b96);
+      this.add.text(W - 120, 102, "LIVE SPECTATOR", { fontFamily: "Arial", fontSize: "18px", fontStyle: "900", color: "#7dff9b", stroke: "#000000", strokeThickness: 4 }).setOrigin(0.5);
+    }
     if (!t) return;
 
     const kicker = getPlayer(state, t.kickerId);

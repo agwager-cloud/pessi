@@ -82,8 +82,13 @@ export class TournamentScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     if (isRoundLive) {
-      this.add.text(panelX + panelW - 158, panelY + 34, "MATCHES LIVE", {
+      const roundMatches = state.bracket.filter((m) => m.round === state.roundNumber);
+      const complete = roundMatches.filter((m) => m.status === "done").length;
+      this.add.text(panelX + panelW - 158, panelY + 24, "MATCHES LIVE", {
         fontFamily: "Arial", fontSize: "18px", fontStyle: "900", color: "#fff2a6", stroke: "#000000", strokeThickness: 4
+      }).setOrigin(0.5);
+      this.add.text(panelX + panelW - 158, panelY + 48, `${complete} of ${roundMatches.length} complete`, {
+        fontFamily: "Arial", fontSize: "15px", fontStyle: "bold", color: "#dff7e5", stroke: "#000000", strokeThickness: 3
       }).setOrigin(0.5);
     } else if (isHost) {
       const buttonLabel = isRoundResults ? "START NEXT ROUND" : `BEGIN ROUND ${state.roundNumber}`;
@@ -124,7 +129,7 @@ export class TournamentScene extends Phaser.Scene {
       : isRoundResults
         ? "Round complete. Winners are highlighted in gold. Host can build the next round when ready."
         : isRoundLive
-          ? state.message
+          ? `${state.message} Tap any glowing LIVE match card to watch it. You can return to the bracket at any time.`
           : (showFocusedCurrentRound ? "Only the upcoming round matchups are shown here so the next games are easy to read." : state.message);
     this.add.text(W / 2, 690, footer, {
       fontFamily: "Arial",
@@ -342,6 +347,19 @@ export class TournamentScene extends Phaser.Scene {
 
     this.scoreBox(x + w - scoreW - 5, row1Y + rowH / 2, scoreW, this.scoreText(match, true));
     this.scoreBox(x + w - scoreW - 5, row2Y + rowH / 2, scoreW, this.scoreText(match, false));
+
+    if (active && state.liveMatchIds.includes(match.id)) {
+      const hit = this.add.rectangle(x, y, w, h, 0x000000, 0.001).setOrigin(0).setInteractive({ useHandCursor: true });
+      hit.on("pointerup", () => Net.send("watchMatch", match.id));
+      this.add.text(x + w / 2, y + h - 5, "● LIVE • TAP TO WATCH", {
+        fontFamily: "Arial",
+        fontSize: `${Math.max(8, Math.min(13, baseFont))}px`,
+        fontStyle: "900",
+        color: "#7dff9b",
+        stroke: "#000000",
+        strokeThickness: 3
+      }).setOrigin(0.5, 1);
+    }
   }
 
   private drawPlayerRow(label: string, x: number, y: number, w: number, h: number, baseFont: number, winner: boolean, isBot: boolean, isSelf: boolean) {

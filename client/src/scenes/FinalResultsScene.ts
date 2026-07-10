@@ -176,7 +176,15 @@ export class FinalResultsScene extends Phaser.Scene {
     if (!champ || this.announcedWinnerId === champ.id) return;
     this.announcedWinnerId = champ.id;
     const characterName = CHARACTERS[champ.characterIndex]?.name ?? champ.name;
-    void playWinnerAnnouncement(characterName);
+    // A human-played final arrives directly from the penalty music. Give the
+    // corrected results crossfade a brief head start before ducking it for the
+    // winner sequence. Bot-only finals already sit on the results track, but
+    // use the same safe path for consistency.
+    this.time.delayedCall(650, () => {
+      if (!this.scene.isActive("FinalResultsScene")) return;
+      playMusic(this, "results");
+      void playWinnerAnnouncement(characterName);
+    });
   }
 
   private drawBackground() {
