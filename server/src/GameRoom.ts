@@ -102,6 +102,16 @@ function canTeamStillCatch(taken: number, goals: number, otherGoals: number): bo
   return goals + remaining >= otherGoals;
 }
 
+type MatchRuntime = {
+  matchId: string;
+  phase: "tackle" | "penalty" | "penaltyResult";
+  activePenalty: ActivePenalty | null;
+  tackle: TackleState | null;
+  lastShot: ShotEvent | null;
+  message: string;
+  timer: NodeJS.Timeout | null;
+};
+
 export class GameRoom {
   readonly roomCode: string;
   readonly clients = new Map<string, ClientSocket>();
@@ -110,628 +120,87 @@ export class GameRoom {
   players = new Map<string, PlayerRecord>();
   bracket: BracketMatch[] = [];
   phase: PublicState["phase"] = "lobby";
-  activeMatchId: string | null = null;
-  activePenalty: ActivePenalty | null = null;
-  tackle: TackleState | null = null;
-  lastShot: ShotEvent | null = null;
   roundNumber = 0;
   matchIndex = 0;
   message = "Waiting for players.";
   private botCounter = 1;
   private tick: NodeJS.Timeout;
-  private actionTimer: NodeJS.Timeout | null = null;
+  private runtimes = new Map<string, MatchRuntime>();
 
-  constructor(roomCode: string) {
-    this.roomCode = roomCode;
-    this.tick = setInterval(() => this.update(), 100);
-  }
-
+  constructor(roomCode: string) { this.roomCode = roomCode; this.tick = setInterval(() => this.update(), 100); }
   join(client: ClientSocket, options: JoinOptions) {
     this.clients.set(client.sessionId, client);
     const characterIndex = this.pickCharacterIndex(Number(options.characterIndex ?? 0));
     const existing = this.players.get(client.sessionId);
-    if (existing) {
-      existing.connected = true;
-      existing.sessionId = client.sessionId;
-    } else {
-      this.players.set(client.sessionId, {
-        id: client.sessionId,
-        sessionId: client.sessionId,
-        name: cleanName(options.name),
-        characterIndex,
-        isBot: false,
-        connected: true,
-        eliminated: false,
-        wins: 0
-      });
-    }
+    if (existing) { existing.connected = true; existing.sessionId = client.sessionId; }
+    else this.players.set(client.sessionId, { id: client.sessionId, sessionId: client.sessionId, name: cleanName(options.name), characterIndex, isBot: false, connected: true, eliminated: false, wins: 0 });
     if (!this.hostId) this.hostId = client.sessionId;
-    this.autoSizeToHumans();
-    this.message = `${this.players.get(client.sessionId)?.name ?? "Player"} joined the chaos.`;
-    this.broadcastState();
+    this.autoSizeToHumans(); this.message = `${this.nameOf(client.sessionId)} joined the chaos.`; this.broadcastState();
   }
-
   leave(sessionId: string) {
-    this.clients.delete(sessionId);
-    const player = this.players.get(sessionId);
-    if (player) {
-      player.connected = false;
-      player.sessionId = null;
-      if (this.phase === "lobby") this.players.delete(sessionId);
-    }
-    if (this.hostId === sessionId) {
-      const nextHost = [...this.players.values()].find((p) => !p.isBot && p.connected);
-      this.hostId = nextHost?.id ?? null;
-    }
-    this.autoSizeToHumans();
-    this.broadcastState();
+    this.clients.delete(sessionId); const p=this.players.get(sessionId);
+    if (p) { p.connected=false; p.sessionId=null; if(this.phase==="lobby") this.players.delete(sessionId); }
+    if(this.hostId===sessionId) this.hostId=[...this.players.values()].find(p=>!p.isBot&&p.connected)?.id??null;
+    this.autoSizeToHumans(); this.broadcastState();
   }
-
-  dispose() {
-    clearInterval(this.tick);
-    this.clearActionTimer();
-  }
-
-  isEmpty() {
-    return this.clients.size === 0;
-  }
-
+  dispose(){ clearInterval(this.tick); this.clearAllTimers(); }
+  isEmpty(){ return this.clients.size===0; }
   receive(client: ClientSocket, raw: unknown) {
-    const msg = raw as { type?: string; data?: unknown };
-    const type = String(msg.type ?? "");
-    const data = msg.data;
-    if (type === "setTournamentSize") this.hostOnly(client, () => this.setTournamentSize(Number(data)));
-    else if (type === "addBot") this.hostOnly(client, () => this.addBot());
-    else if (type === "removeBot") this.hostOnly(client, () => this.removeBot(String(data ?? "")));
-    else if (type === "removePlayer") this.hostOnly(client, () => this.removePlayer(String(data ?? "")));
-    else if (type === "startTournament") this.hostOnly(client, () => this.startTournament());
-    else if (type === "beginRound") this.hostOnly(client, () => this.beginRound());
-    else if (type === "move") this.handleMove(client, data);
-    else if (type === "goaliePick") this.handleGoaliePick(client, String(data) as GoalZone);
-    else if (type === "shoot") this.handleShoot(client, data);
-    else if (type === "nextRound") this.hostOnly(client, () => this.nextRoundFromResults());
-    else if (type === "backToLobby") this.hostOnly(client, () => this.backToLobby());
+    const msg=raw as {type?:string;data?:unknown}; const type=String(msg.type??""); const data=msg.data;
+    if(type==="setTournamentSize") this.hostOnly(client,()=>this.setTournamentSize(Number(data)));
+    else if(type==="addBot") this.hostOnly(client,()=>this.addBot());
+    else if(type==="removeBot") this.hostOnly(client,()=>this.removeBot(String(data??"")));
+    else if(type==="removePlayer") this.hostOnly(client,()=>this.removePlayer(String(data??"")));
+    else if(type==="startTournament") this.hostOnly(client,()=>this.startTournament());
+    else if(type==="beginRound") this.hostOnly(client,()=>this.beginRound());
+    else if(type==="move") this.handleMove(client,data);
+    else if(type==="goaliePick") this.handleGoaliePick(client,String(data) as GoalZone);
+    else if(type==="shoot") this.handleShoot(client,data);
+    else if(type==="nextRound") this.hostOnly(client,()=>this.nextRoundFromResults());
+    else if(type==="backToLobby") this.hostOnly(client,()=>this.backToLobby());
   }
-
-  private hostOnly(client: ClientSocket, fn: () => void) {
-    if (client.sessionId !== this.hostId) return;
-    fn();
-    this.broadcastState();
+  private hostOnly(c:ClientSocket,fn:()=>void){ if(c.sessionId!==this.hostId)return; fn(); this.broadcastState(); }
+  private runtimeForPlayer(id:string):MatchRuntime|null { return [...this.runtimes.values()].find(r=>{const m=this.matchById(r.matchId);return m&&(m.p1===id||m.p2===id);})??null; }
+  private publicState(viewerId?:string):PublicState {
+    const r=viewerId?this.runtimeForPlayer(viewerId):null;
+    const visiblePenalty=r?.activePenalty?{...r.activePenalty,goaliePick:viewerId===r.activePenalty.goalieId?r.activePenalty.goaliePick:null}:null;
+    const viewerPhase = r ? r.phase : this.phase;
+    const liveCount=this.runtimes.size;
+    return { roomCode:this.roomCode,hostId:this.hostId,phase:viewerPhase,tournamentSize:this.tournamentSize,players:[...this.players.values()].sort((a,b)=>a.name.localeCompare(b.name)),bracket:this.bracket,activeMatchId:r?.matchId??null,activePenalty:visiblePenalty,tackle:r?.tackle??null,lastShot:r?.lastShot??null,roundNumber:this.roundNumber,matchIndex:r?this.matchById(r.matchId)?.matchNo??0:this.matchIndex,message:r?.message??(this.phase==="roundLive"?`Round ${this.roundNumber} is live • ${liveCount} human match${liveCount===1?"":"es"} still playing.`:this.message)};
   }
-
-  private publicState(viewerId?: string): PublicState {
-    const visiblePenalty = this.activePenalty
-      ? { ...this.activePenalty, goaliePick: viewerId === this.activePenalty.goalieId ? this.activePenalty.goaliePick : null }
-      : null;
-    return {
-      roomCode: this.roomCode,
-      hostId: this.hostId,
-      phase: this.phase,
-      tournamentSize: this.tournamentSize,
-      players: [...this.players.values()].sort((a, b) => a.name.localeCompare(b.name)),
-      bracket: this.bracket,
-      activeMatchId: this.activeMatchId,
-      activePenalty: visiblePenalty,
-      tackle: this.tackle,
-      lastShot: this.lastShot,
-      roundNumber: this.roundNumber,
-      matchIndex: this.matchIndex,
-      message: this.message
-    };
-  }
-
-  private broadcastState() {
-    for (const client of this.clients.values()) {
-      if (client.ws.readyState === client.ws.OPEN) {
-        client.ws.send(JSON.stringify({ type: "state", data: this.publicState(client.sessionId) }));
-      }
-    }
-  }
-
-  private pickCharacterIndex(requested: number): number {
-    const used = new Set([...this.players.values()].map((p) => p.characterIndex));
-    const safeRequested = Number.isFinite(requested) ? clamp(Math.floor(requested), 0, CHARACTERS.length - 1) : 0;
-    if (!used.has(safeRequested)) return safeRequested;
-    for (let i = 0; i < CHARACTERS.length; i++) if (!used.has(i)) return i;
-    return safeRequested;
-  }
-
-  private autoSizeToHumans() {
-    if (this.phase !== "lobby") return;
-    const humans = [...this.players.values()].filter((p) => !p.isBot).length;
-    this.tournamentSize = nextTournamentSize(humans);
-    this.trimBotsToFit();
-  }
-
-  private setTournamentSize(size: number) {
-    const humanCount = [...this.players.values()].filter((p) => !p.isBot).length;
-    const allowed = TOURNAMENT_SIZES.find((n) => n === size && n >= humanCount) ?? nextTournamentSize(humanCount);
-    this.tournamentSize = allowed;
-    this.trimBotsToFit();
-    this.fillBots();
-    this.message = `Bracket set to ${this.tournamentSize}. Bots filled the remaining positions.`;
-  }
-
-  private trimBotsToFit() {
-    const humans = [...this.players.values()].filter((p) => !p.isBot).length;
-    const maxBots = Math.max(0, this.tournamentSize - humans);
-    const bots = [...this.players.values()].filter((p) => p.isBot);
-    while (bots.length > maxBots) {
-      const bot = bots.pop();
-      if (bot) this.players.delete(bot.id);
-    }
-  }
-
-  private fillBots() {
-    const humans = [...this.players.values()].filter((p) => !p.isBot).length;
-    let bots = [...this.players.values()].filter((p) => p.isBot).length;
-    while (humans + bots < this.tournamentSize) {
-      this.addBot(false);
-      bots++;
-    }
-  }
-
-  private addBot(announce = true) {
-    if (this.players.size >= this.tournamentSize) return;
-    const characterIndex = this.pickCharacterIndex(this.botCounter % CHARACTERS.length);
-    const character = CHARACTERS[characterIndex];
-    const id = `bot_${Date.now()}_${this.botCounter++}`;
-    this.players.set(id, {
-      id,
-      sessionId: null,
-      name: character.name,
-      characterIndex,
-      isBot: true,
-      connected: true,
-      eliminated: false,
-      wins: 0
-    });
-    if (announce) this.message = `${character.name} entered as a bot.`;
-  }
-
-  private removeBot(id: string) {
-    const player = this.players.get(id);
-    if (player?.isBot && this.phase === "lobby") {
-      this.players.delete(id);
-      this.message = `${player.name} bot removed.`;
-    }
-  }
-
-  private removePlayer(id: string) {
-    const player = this.players.get(id);
-    if (!player || this.phase !== "lobby" || id === this.hostId) return;
-    this.players.delete(id);
-    this.message = `${player.name} removed from the lobby.`;
-    this.autoSizeToHumans();
-  }
-
-  private startTournament() {
-    if (this.phase !== "lobby") return;
-    this.fillBots();
-    const entrants = [...this.players.values()].slice(0, this.tournamentSize);
-    if (entrants.length < 2) {
-      this.message = "Need at least 2 players.";
-      return;
-    }
-    for (const p of this.players.values()) {
-      p.eliminated = !entrants.some((e) => e.id === p.id);
-      p.wins = 0;
-    }
-    this.bracket = [];
-    this.roundNumber = 1;
-    this.matchIndex = 0;
-    const shuffled = shuffle(entrants.map((p) => p.id));
-    for (let i = 0; i < shuffled.length; i += 2) {
-      this.bracket.push(this.createMatch(this.roundNumber, i / 2 + 1, shuffled[i], shuffled[i + 1]));
-    }
-    this.phase = "tournament";
-    this.activeMatchId = null;
-    this.activePenalty = null;
-    this.tackle = null;
-    this.lastShot = null;
-    this.message = "First round matchups are ready. Host can begin Round 1.";
-  }
-
-  private beginRound() {
-    if (this.phase !== "tournament") return;
-    this.message = `Round ${this.roundNumber} begins. Someone call the drama police.`;
-    this.playNextPendingMatch();
-  }
-
-  private createMatch(round: number, matchNo: number, p1: string, p2: string): BracketMatch {
-    return {
-      id: `r${round}m${matchNo}_${Date.now()}_${Math.floor(Math.random() * 9999)}`,
-      round,
-      matchNo,
-      p1,
-      p2,
-      p1Score: 0,
-      p2Score: 0,
-      p1Shootout: 0,
-      p2Shootout: 0,
-      p1ShootoutTaken: 0,
-      p2ShootoutTaken: 0,
-      winnerId: null,
-      loserId: null,
-      events: [],
-      status: "pending"
-    };
-  }
-
-  private activeMatch(): BracketMatch | null {
-    if (!this.activeMatchId) return null;
-    return this.bracket.find((m) => m.id === this.activeMatchId) ?? null;
-  }
-
-  private playNextPendingMatch() {
-    this.clearActionTimer();
-    let next = this.bracket.find((m) => m.round === this.roundNumber && m.status === "pending");
-    while (next && this.players.get(next.p1)?.isBot && this.players.get(next.p2)?.isBot) {
-      this.autoResolveBotMatch(next);
-      next = this.bracket.find((m) => m.round === this.roundNumber && m.status === "pending");
-    }
-    if (!next) {
-      this.activeMatchId = null;
-      this.activePenalty = null;
-      this.tackle = null;
-      this.phase = this.isTournamentDone() ? "finalResults" : "roundResults";
-      this.message = this.phase === "finalResults" ? "Tournament complete!" : "Round complete. Host can start the next round.";
-      this.broadcastState();
-      return;
-    }
-    this.activeMatchId = next.id;
-    next.status = "playing";
-    this.matchIndex = next.matchNo;
-    this.startTackle(next.p1, next.p2);
-  }
-
-  private autoResolveBotMatch(match: BracketMatch) {
-    match.status = "playing";
-    match.p1Score = Math.random() < 0.72 ? 1 : 0;
-    match.p2Score = Math.random() < 0.72 ? 1 : 0;
-    if (match.p1Score === match.p2Score) {
-      for (let i = 0; i < 5; i++) {
-        match.p1ShootoutTaken++;
-        match.p2ShootoutTaken++;
-        if (Math.random() < 0.74) match.p1Shootout++;
-        if (Math.random() < 0.74) match.p2Shootout++;
-      }
-      while (match.p1Shootout === match.p2Shootout) {
-        match.p1ShootoutTaken++;
-        match.p2ShootoutTaken++;
-        if (Math.random() < 0.74) match.p1Shootout++;
-        if (Math.random() < 0.74) match.p2Shootout++;
-      }
-    }
-    const p1Total = match.p1Score * 10 + match.p1Shootout;
-    const p2Total = match.p2Score * 10 + match.p2Shootout;
-    const winnerId = p1Total >= p2Total ? match.p1 : match.p2;
-    const loserId = winnerId === match.p1 ? match.p2 : match.p1;
-    match.winnerId = winnerId;
-    match.loserId = loserId;
-    match.status = "done";
-    const winner = this.players.get(winnerId);
-    const loser = this.players.get(loserId);
-    if (winner) winner.wins++;
-    if (loser) loser.eliminated = true;
-  }
-
-  private startTackle(kickerId: string, goalieId: string) {
-    const now = Date.now();
-    this.activePenalty = null;
-    this.lastShot = null;
-    this.phase = "tackle";
-    this.tackle = {
-      kickerId,
-      goalieId,
-      kickerX: 310,
-      kickerY: 360,
-      goalieX: 970,
-      goalieY: 360,
-      tackleText: randomFrom(TACKLE_LINES),
-      startedAt: now,
-      timeoutAt: now + 7200,
-      impactAt: null
-    };
-    this.message = `${this.nameOf(goalieId)} is approaching for a ${this.tackle.tackleText}!`;
-    this.broadcastState();
-  }
-
-  private startPenalty(mode: ShotMode, kickerId: string, goalieId: string) {
-    const now = Date.now();
-    const kickerIsBot = !!this.players.get(kickerId)?.isBot;
-    const botKickDelayMs = 5200;
-    const humanShotClockMs = 22000;
-    this.tackle = null;
-    this.phase = "penalty";
-    this.lastShot = null;
-    this.activePenalty = {
-      mode,
-      kickerId,
-      goalieId,
-      shotLabel: this.shotLabel(mode, kickerId),
-      goaliePick: this.players.get(goalieId)?.isBot ? randomFrom(GOAL_ZONES) : null,
-      startedAt: now,
-      timeoutAt: now + (kickerIsBot ? botKickDelayMs : humanShotClockMs)
-    };
-    this.message = kickerIsBot
-      ? `${this.nameOf(kickerId)} is winding up. Bot shot in 5 seconds!`
-      : `${this.nameOf(kickerId)} steps up against ${this.nameOf(goalieId)}.`;
-    if (kickerIsBot) {
-      this.actionTimer = setTimeout(() => {
-        if (this.activePenalty?.kickerId === kickerId) {
-          this.resolveShot({ aimX: Math.random(), aimY: Math.random(), power: 45 + Math.random() * 48 });
-        }
-      }, botKickDelayMs);
-    }
-    this.broadcastState();
-  }
-
-  private shotLabel(mode: ShotMode, kickerId: string): string {
-    const m = this.activeMatch();
-    if (!m) return "Penalty";
-    if (mode === "regular") return `${this.nameOf(kickerId)} regular penalty`;
-    const isP1 = kickerId === m.p1;
-    const taken = isP1 ? m.p1ShootoutTaken + 1 : m.p2ShootoutTaken + 1;
-    return taken <= 5 ? `Shootout kick ${taken} of 5` : `Sudden death kick ${taken - 5}`;
-  }
-
-  private update() {
-    if (this.phase === "tackle" && this.tackle) this.updateTackle();
-    if (this.phase === "penalty" && this.activePenalty) this.updatePenaltyTimeout();
-    if (this.phase !== "lobby") this.broadcastState();
-  }
-
-  private updateTackle() {
-    const t = this.tackle;
-    if (!t) return;
-    const now = Date.now();
-
-    if (t.impactAt) {
-      if (now > t.timeoutAt) {
-        this.message = `${this.nameOf(t.kickerId)} finally stops auditioning for theatre and remembers there is a penalty to take.`;
-        this.startPenalty("regular", t.kickerId, t.goalieId);
-      }
-      return;
-    }
-
-    const kicker = this.players.get(t.kickerId);
-    if (kicker?.isBot) {
-      t.kickerX += (Math.random() - 0.4) * 18;
-      t.kickerY += (Math.random() - 0.5) * 18;
-      t.kickerX = clamp(t.kickerX, 180, 570);
-      t.kickerY = clamp(t.kickerY, 170, 590);
-    }
-
-    const dx = t.kickerX - t.goalieX;
-    const dy = t.kickerY - t.goalieY;
-    const dist = Math.hypot(dx, dy) || 1;
-    const speed = dist < 210 ? 38 : 27;
-    t.goalieX += (dx / dist) * speed;
-    t.goalieY += (dy / dist) * speed;
-
-    if (dist < 78 || now > t.timeoutAt) {
-      t.impactAt = now;
-      t.timeoutAt = now + 6500;
-      // Keep the collision visually centred for all clients.
-      t.goalieX = t.kickerX + 58;
-      t.goalieY = t.kickerY + 20;
-      this.message = `${this.nameOf(t.goalieId)} unleashes a ${t.tackleText}! ${this.nameOf(t.kickerId)} begins a world-class flop.`;
-      this.broadcastState();
-    }
-  }
-
-  private updatePenaltyTimeout() {
-    if (!this.activePenalty) return;
-    if (Date.now() > this.activePenalty.timeoutAt) {
-      if (!this.activePenalty.goaliePick) this.activePenalty.goaliePick = "LM";
-      this.resolveShot({ aimX: Math.random(), aimY: Math.random(), power: 35 + Math.random() * 45 });
-    }
-  }
-
-  private handleMove(client: ClientSocket, data: unknown) {
-    if (this.phase !== "tackle" || !this.tackle) return;
-    if (client.sessionId !== this.tackle.kickerId) return;
-    const d = data as { dx?: number; dy?: number };
-    this.tackle.kickerX = clamp(this.tackle.kickerX + clamp(Number(d.dx ?? 0), -1, 1) * 28, 180, 570);
-    this.tackle.kickerY = clamp(this.tackle.kickerY + clamp(Number(d.dy ?? 0), -1, 1) * 28, 170, 590);
-    this.broadcastState();
-  }
-
-  private handleGoaliePick(client: ClientSocket, zone: GoalZone) {
-    if (this.phase !== "penalty" || !this.activePenalty) return;
-    if (client.sessionId !== this.activePenalty.goalieId) return;
-    if (!GOAL_ZONES.includes(zone)) return;
-    this.activePenalty.goaliePick = zone;
-    this.message = `${this.nameOf(client.sessionId)} has chosen a dive.`;
-    this.broadcastState();
-  }
-
-  private handleShoot(client: ClientSocket, data: unknown) {
-    if (this.phase !== "penalty" || !this.activePenalty) return;
-    if (client.sessionId !== this.activePenalty.kickerId) return;
-    this.resolveShot(data);
-  }
-
-  private resolveShot(data: unknown) {
-    const p = this.activePenalty;
-    const match = this.activeMatch();
-    if (!p || !match || this.phase !== "penalty") return;
-    this.clearActionTimer();
-    const d = data as { aimX?: number; aimY?: number; power?: number };
-    const aimX = clamp(Number(d.aimX ?? 0.5), 0, 1);
-    const aimY = clamp(Number(d.aimY ?? 0.5), 0, 1);
-    const power = clamp(Number(d.power ?? 60), 0, 100);
-    const zone = zoneFromAim(aimX, aimY);
-    const goaliePick = p.goaliePick ?? "LM";
-
-    const inSweetSpot = power >= 25 && power <= 75;
-    const softPower = power < 25;
-    const chaosPower = power > 75;
-    const softMissChance = softPower ? (power < 12 ? 0.82 : power < 18 ? 0.62 : 0.42) : 0;
-    const chaosMissChance = chaosPower ? Math.min(0.62, 0.18 + ((power - 75) / 25) * 0.44) : 0;
-    const cornerRisk = aimX < 0.08 || aimX > 0.92 || aimY < 0.08 ? 0.11 : 0;
-    const baseMissChance = inSweetSpot ? 0.03 : 0;
-    const miss = Math.random() < baseMissChance + softMissChance + chaosMissChance + cornerRisk;
-    let saved = false;
-    if (!miss) {
-      // Exact-zone reads are now deterministic so the visual result and the score can never feel contradictory.
-      // If the keeper chooses the same zone as the shot, it is a save. Otherwise it is a goal.
-      saved = goaliePick === zone;
-    }
-    const goal = !miss && !saved;
-    const missLines = softPower ? SHOT_LINES.softMiss : chaosPower ? SHOT_LINES.chaosMiss : SHOT_LINES.miss;
-    const event: ShotEvent = {
-      matchId: match.id,
-      mode: p.mode,
-      kickerId: p.kickerId,
-      goalieId: p.goalieId,
-      goal,
-      miss,
-      saved,
-      zone,
-      goaliePick,
-      aimX,
-      aimY,
-      power: Math.round(power),
-      text: randomFrom(goal ? SHOT_LINES.goal : miss ? missLines : SHOT_LINES.save)
-    };
-
-    this.applyShotToMatch(match, event);
-    this.lastShot = event;
-    this.activePenalty = null;
-    this.phase = "penaltyResult";
-    this.message = event.text;
-    this.broadcastState();
-    this.actionTimer = setTimeout(() => this.afterShot(match), 3300);
-  }
-
-  private applyShotToMatch(match: BracketMatch, event: ShotEvent) {
-    match.events.push(event);
-    const isP1 = event.kickerId === match.p1;
-    if (event.mode === "regular") {
-      if (event.goal) isP1 ? match.p1Score++ : match.p2Score++;
-    } else if (isP1) {
-      match.p1ShootoutTaken++;
-      if (event.goal) match.p1Shootout++;
-    } else {
-      match.p2ShootoutTaken++;
-      if (event.goal) match.p2Shootout++;
-    }
-  }
-
-  private afterShot(match: BracketMatch) {
-    if (match.winnerId) {
-      this.finishMatch(match, match.winnerId, match.winnerId === match.p1 ? match.p2 : match.p1);
-      return;
-    }
-    const regularShots = match.events.filter((e) => e.mode === "regular").length;
-    if (regularShots === 1) {
-      this.startTackle(match.p2, match.p1);
-      return;
-    }
-    if (regularShots === 2 && match.p1Score !== match.p2Score) {
-      const winner = match.p1Score > match.p2Score ? match.p1 : match.p2;
-      this.finishMatch(match, winner, winner === match.p1 ? match.p2 : match.p1);
-      return;
-    }
-    this.progressShootout(match);
-  }
-
-  private progressShootout(match: BracketMatch) {
-    const winner = this.shootoutWinner(match);
-    if (winner) {
-      this.finishMatch(match, winner, winner === match.p1 ? match.p2 : match.p1);
-      return;
-    }
-    const nextKicker = match.p1ShootoutTaken === match.p2ShootoutTaken ? match.p1 : match.p2;
-    this.startPenalty("shootout", nextKicker, nextKicker === match.p1 ? match.p2 : match.p1);
-  }
-
-  private shootoutWinner(match: BracketMatch): string | null {
-    const aTaken = match.p1ShootoutTaken;
-    const bTaken = match.p2ShootoutTaken;
-    const aGoals = match.p1Shootout;
-    const bGoals = match.p2Shootout;
-    if (aTaken <= 5 && bTaken <= 5) {
-      if (!canTeamStillCatch(aTaken, aGoals, bGoals)) return match.p2;
-      if (!canTeamStillCatch(bTaken, bGoals, aGoals)) return match.p1;
-      if (aTaken === 5 && bTaken === 5 && aGoals !== bGoals) return aGoals > bGoals ? match.p1 : match.p2;
-      return null;
-    }
-    if (aTaken === bTaken && aGoals !== bGoals) return aGoals > bGoals ? match.p1 : match.p2;
-    return null;
-  }
-
-  private finishMatch(match: BracketMatch, winnerId: string, loserId: string) {
-    match.winnerId = winnerId;
-    match.loserId = loserId;
-    match.status = "done";
-    const winner = this.players.get(winnerId);
-    const loser = this.players.get(loserId);
-    if (winner) winner.wins++;
-    if (loser) loser.eliminated = true;
-    this.message = `${this.nameOf(winnerId)} advances! ${this.nameOf(loserId)} joins the spectator choir.`;
-    this.activePenalty = null;
-    this.tackle = null;
-    // Keep the final shot visible while the winner/next-match transition waits.
-    this.phase = "penaltyResult";
-    this.broadcastState();
-    this.actionTimer = setTimeout(() => this.playNextPendingMatch(), 900);
-  }
-
-  private nextRoundFromResults() {
-    if (this.phase !== "roundResults") return;
-    const winners = this.bracket
-      .filter((m) => m.round === this.roundNumber)
-      .map((m) => m.winnerId)
-      .filter((id): id is string => Boolean(id));
-    if (winners.length <= 1) {
-      this.phase = "finalResults";
-      this.message = "Tournament complete!";
-      return;
-    }
-    this.roundNumber++;
-    this.matchIndex = 0;
-    for (let i = 0; i < winners.length; i += 2) {
-      this.bracket.push(this.createMatch(this.roundNumber, i / 2 + 1, winners[i], winners[i + 1]));
-    }
-    this.phase = "tournament";
-    this.activeMatchId = null;
-    this.activePenalty = null;
-    this.tackle = null;
-    this.lastShot = null;
-    this.message = `Round ${this.roundNumber} matchups are ready. Host can begin the round.`;
-  }
-
-  private isTournamentDone(): boolean {
-    const active = [...this.players.values()].filter((p) => !p.eliminated && this.bracket.some((m) => m.p1 === p.id || m.p2 === p.id));
-    return active.length === 1 && this.bracket.some((m) => m.status === "done");
-  }
-
-  private backToLobby() {
-    this.clearActionTimer();
-    this.phase = "lobby";
-    this.bracket = [];
-    this.activeMatchId = null;
-    this.activePenalty = null;
-    this.tackle = null;
-    this.lastShot = null;
-    this.roundNumber = 0;
-    this.matchIndex = 0;
-    for (const p of this.players.values()) p.eliminated = false;
-    this.autoSizeToHumans();
-    this.message = "Back in the lobby. Ankles reset.";
-  }
-
-  private clearActionTimer() {
-    if (this.actionTimer) {
-      clearTimeout(this.actionTimer);
-      this.actionTimer = null;
-    }
-  }
-
-  private nameOf(id: string): string {
-    return this.players.get(id)?.name ?? "Mystery Player";
-  }
+  private broadcastState(){ for(const c of this.clients.values()) if(c.ws.readyState===c.ws.OPEN)c.ws.send(JSON.stringify({type:"state",data:this.publicState(c.sessionId)})); }
+  private pickCharacterIndex(requested:number){const used=new Set([...this.players.values()].map(p=>p.characterIndex));const safe=Number.isFinite(requested)?clamp(Math.floor(requested),0,CHARACTERS.length-1):0;if(!used.has(safe))return safe;for(let i=0;i<CHARACTERS.length;i++)if(!used.has(i))return i;return safe;}
+  private autoSizeToHumans(){if(this.phase!=="lobby")return;const h=[...this.players.values()].filter(p=>!p.isBot).length;this.tournamentSize=nextTournamentSize(h);this.trimBotsToFit();}
+  private setTournamentSize(size:number){const h=[...this.players.values()].filter(p=>!p.isBot).length;this.tournamentSize=TOURNAMENT_SIZES.find(n=>n===size&&n>=h)??nextTournamentSize(h);this.trimBotsToFit();this.fillBots();this.message=`Bracket set to ${this.tournamentSize}. Bots filled the remaining positions.`;}
+  private trimBotsToFit(){const h=[...this.players.values()].filter(p=>!p.isBot).length;const bots=[...this.players.values()].filter(p=>p.isBot);while(bots.length>Math.max(0,this.tournamentSize-h)){const b=bots.pop();if(b)this.players.delete(b.id);}}
+  private fillBots(){let h=[...this.players.values()].filter(p=>!p.isBot).length,b=[...this.players.values()].filter(p=>p.isBot).length;while(h+b<this.tournamentSize){this.addBot(false);b++;}}
+  private addBot(announce=true){if(this.players.size>=this.tournamentSize)return;const ci=this.pickCharacterIndex(this.botCounter%CHARACTERS.length),ch=CHARACTERS[ci],id=`bot_${Date.now()}_${this.botCounter++}`;this.players.set(id,{id,sessionId:null,name:ch.name,characterIndex:ci,isBot:true,connected:true,eliminated:false,wins:0});if(announce)this.message=`${ch.name} entered as a bot.`;}
+  private removeBot(id:string){const p=this.players.get(id);if(p?.isBot&&this.phase==="lobby"){this.players.delete(id);this.message=`${p.name} bot removed.`;}}
+  private removePlayer(id:string){const p=this.players.get(id);if(!p||this.phase!=="lobby"||id===this.hostId)return;this.players.delete(id);this.autoSizeToHumans();}
+  private createMatch(round:number,matchNo:number,p1:string,p2:string):BracketMatch{return{id:`r${round}m${matchNo}_${Date.now()}_${Math.floor(Math.random()*9999)}`,round,matchNo,p1,p2,p1Score:0,p2Score:0,p1Shootout:0,p2Shootout:0,p1ShootoutTaken:0,p2ShootoutTaken:0,winnerId:null,loserId:null,events:[],status:"pending"};}
+  private startTournament(){if(this.phase!=="lobby")return;this.fillBots();const entrants=[...this.players.values()].slice(0,this.tournamentSize);if(entrants.length<2){this.message="Need at least 2 players.";return;}for(const p of this.players.values()){p.eliminated=!entrants.some(e=>e.id===p.id);p.wins=0;}this.bracket=[];this.roundNumber=1;const ids=shuffle(entrants.map(p=>p.id));for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));this.phase="tournament";this.message="First round matchups are ready. Host can begin Round 1.";}
+  private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
+  private matchById(id:string){return this.bracket.find(m=>m.id===id)??null;}
+  private autoResolveBotMatch(m:BracketMatch){m.status="playing";m.p1Score=Math.random()<.72?1:0;m.p2Score=Math.random()<.72?1:0;if(m.p1Score===m.p2Score){for(let i=0;i<5;i++){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}while(m.p1Shootout===m.p2Shootout){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}}const w=m.p1Score*10+m.p1Shootout>=m.p2Score*10+m.p2Shootout?m.p1:m.p2;this.markFinished(m,w,w===m.p1?m.p2:m.p1);}
+  private startTackle(r:MatchRuntime,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now();r.phase="tackle";r.activePenalty=null;r.lastShot=null;r.tackle={kickerId,goalieId,kickerX:310,kickerY:360,goalieX:970,goalieY:360,tackleText:randomFrom(TACKLE_LINES),startedAt:now,timeoutAt:now+7200,impactAt:null};r.message=`${this.nameOf(goalieId)} is approaching for a ${r.tackle.tackleText}!`;}
+  private startPenalty(r:MatchRuntime,mode:ShotMode,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now(),bot=!!this.players.get(kickerId)?.isBot,delay=5200;r.phase="penalty";r.tackle=null;r.lastShot=null;r.activePenalty={mode,kickerId,goalieId,shotLabel:this.shotLabel(r,mode,kickerId),goaliePick:this.players.get(goalieId)?.isBot?randomFrom(GOAL_ZONES):null,startedAt:now,timeoutAt:now+(bot?delay:22000)};r.message=bot?`${this.nameOf(kickerId)} is winding up. Bot shot in 5 seconds!`:`${this.nameOf(kickerId)} steps up against ${this.nameOf(goalieId)}.`;if(bot)r.timer=setTimeout(()=>{if(r.activePenalty?.kickerId===kickerId)this.resolveShot(r,{aimX:Math.random(),aimY:Math.random(),power:45+Math.random()*48});},delay);}
+  private shotLabel(r:MatchRuntime,mode:ShotMode,kickerId:string){const m=this.matchById(r.matchId);if(!m)return"Penalty";if(mode==="regular")return`${this.nameOf(kickerId)} regular penalty`;const n=kickerId===m.p1?m.p1ShootoutTaken+1:m.p2ShootoutTaken+1;return n<=5?`Shootout kick ${n} of 5`:`Sudden death kick ${n-5}`;}
+  private update(){for(const r of this.runtimes.values()){if(r.phase==="tackle"&&r.tackle)this.updateTackle(r);if(r.phase==="penalty"&&r.activePenalty&&Date.now()>r.activePenalty.timeoutAt){if(!r.activePenalty.goaliePick)r.activePenalty.goaliePick="LM";this.resolveShot(r,{aimX:Math.random(),aimY:Math.random(),power:35+Math.random()*45});}}if(this.phase!=="lobby")this.broadcastState();}
+  private updateTackle(r:MatchRuntime){const t=r.tackle;if(!t)return;const now=Date.now();if(t.impactAt){if(now>t.timeoutAt)this.startPenalty(r,"regular",t.kickerId,t.goalieId);return;}if(this.players.get(t.kickerId)?.isBot){t.kickerX=clamp(t.kickerX+(Math.random()-.4)*18,180,570);t.kickerY=clamp(t.kickerY+(Math.random()-.5)*18,170,590);}const dx=t.kickerX-t.goalieX,dy=t.kickerY-t.goalieY,dist=Math.hypot(dx,dy)||1,s=dist<210?38:27;t.goalieX+=(dx/dist)*s;t.goalieY+=(dy/dist)*s;if(dist<78||now>t.timeoutAt){t.impactAt=now;t.timeoutAt=now+6500;t.goalieX=t.kickerX+58;t.goalieY=t.kickerY+20;r.message=`${this.nameOf(t.goalieId)} unleashes a ${t.tackleText}! ${this.nameOf(t.kickerId)} begins a world-class flop.`;}}
+  private handleMove(c:ClientSocket,data:unknown){const r=this.runtimeForPlayer(c.sessionId);if(!r||r.phase!=="tackle"||!r.tackle||c.sessionId!==r.tackle.kickerId)return;const d=data as {dx?:number;dy?:number};r.tackle.kickerX=clamp(r.tackle.kickerX+clamp(Number(d.dx??0),-1,1)*28,180,570);r.tackle.kickerY=clamp(r.tackle.kickerY+clamp(Number(d.dy??0),-1,1)*28,170,590);}
+  private handleGoaliePick(c:ClientSocket,z:GoalZone){const r=this.runtimeForPlayer(c.sessionId);if(!r||r.phase!=="penalty"||!r.activePenalty||c.sessionId!==r.activePenalty.goalieId||!GOAL_ZONES.includes(z))return;r.activePenalty.goaliePick=z;r.message=`${this.nameOf(c.sessionId)} has chosen a dive.`;}
+  private handleShoot(c:ClientSocket,data:unknown){const r=this.runtimeForPlayer(c.sessionId);if(!r||r.phase!=="penalty"||!r.activePenalty||c.sessionId!==r.activePenalty.kickerId)return;this.resolveShot(r,data);}
+  private resolveShot(r:MatchRuntime,data:unknown){const p=r.activePenalty,m=this.matchById(r.matchId);if(!p||!m||r.phase!=="penalty")return;this.clearRuntimeTimer(r);const d=data as {aimX?:number;aimY?:number;power?:number},aimX=clamp(Number(d.aimX??.5),0,1),aimY=clamp(Number(d.aimY??.5),0,1),power=clamp(Number(d.power??60),0,100),zone=zoneFromAim(aimX,aimY),gp=p.goaliePick??"LM";const sweet=power>=25&&power<=75,soft=power<25,chaos=power>75,miss=Math.random()<((sweet?.03:0)+(soft?(power<12?.82:power<18?.62:.42):0)+(chaos?Math.min(.62,.18+((power-75)/25)*.44):0)+(aimX<.08||aimX>.92||aimY<.08?.11:0));const saved=!miss&&gp===zone,goal=!miss&&!saved,missLines=soft?SHOT_LINES.softMiss:chaos?SHOT_LINES.chaosMiss:SHOT_LINES.miss;const e:ShotEvent={matchId:m.id,mode:p.mode,kickerId:p.kickerId,goalieId:p.goalieId,goal,miss,saved,zone,goaliePick:gp,aimX,aimY,power:Math.round(power),text:randomFrom(goal?SHOT_LINES.goal:miss?missLines:SHOT_LINES.save)};this.applyShot(m,e);r.lastShot=e;r.activePenalty=null;r.phase="penaltyResult";r.message=e.text;r.timer=setTimeout(()=>this.afterShot(r,m),3300);}
+  private applyShot(m:BracketMatch,e:ShotEvent){m.events.push(e);const p1=e.kickerId===m.p1;if(e.mode==="regular"){if(e.goal)p1?m.p1Score++:m.p2Score++;}else if(p1){m.p1ShootoutTaken++;if(e.goal)m.p1Shootout++;}else{m.p2ShootoutTaken++;if(e.goal)m.p2Shootout++;}}
+  private afterShot(r:MatchRuntime,m:BracketMatch){const regular=m.events.filter(e=>e.mode==="regular").length;if(regular===1){this.startTackle(r,m.p2,m.p1);return;}if(regular===2&&m.p1Score!==m.p2Score){const w=m.p1Score>m.p2Score?m.p1:m.p2;this.finishMatch(r,m,w,w===m.p1?m.p2:m.p1);return;}const w=this.shootoutWinner(m);if(w){this.finishMatch(r,m,w,w===m.p1?m.p2:m.p1);return;}const k=m.p1ShootoutTaken===m.p2ShootoutTaken?m.p1:m.p2;this.startPenalty(r,"shootout",k,k===m.p1?m.p2:m.p1);}
+  private shootoutWinner(m:BracketMatch):string|null{const a=m.p1ShootoutTaken,b=m.p2ShootoutTaken,ag=m.p1Shootout,bg=m.p2Shootout;if(a<=5&&b<=5){if(!canTeamStillCatch(a,ag,bg))return m.p2;if(!canTeamStillCatch(b,bg,ag))return m.p1;if(a===5&&b===5&&ag!==bg)return ag>bg?m.p1:m.p2;return null;}return a===b&&ag!==bg?(ag>bg?m.p1:m.p2):null;}
+  private markFinished(m:BracketMatch,w:string,l:string){m.winnerId=w;m.loserId=l;m.status="done";const wp=this.players.get(w),lp=this.players.get(l);if(wp)wp.wins++;if(lp)lp.eliminated=true;}
+  private finishMatch(r:MatchRuntime,m:BracketMatch,w:string,l:string){this.markFinished(m,w,l);r.message=`${this.nameOf(w)} advances! ${this.nameOf(l)} joins the spectator choir.`;r.phase="penaltyResult";r.activePenalty=null;r.tackle=null;r.timer=setTimeout(()=>{this.runtimes.delete(m.id);this.checkRoundComplete();this.broadcastState();},900);}
+  private checkRoundComplete(){if(this.runtimes.size>0)return;const pending=this.bracket.some(m=>m.round===this.roundNumber&&m.status!=="done");if(pending)return;this.phase=this.isTournamentDone()?"finalResults":"roundResults";this.message=this.phase==="finalResults"?"Tournament complete!":"Round complete. Host can start the next round.";}
+  private nextRoundFromResults(){if(this.phase!=="roundResults")return;const winners=this.bracket.filter(m=>m.round===this.roundNumber).map(m=>m.winnerId).filter((x):x is string=>!!x);if(winners.length<=1){this.phase="finalResults";return;}this.roundNumber++;for(let i=0;i<winners.length;i+=2)this.bracket.push(this.createMatch(this.roundNumber,i/2+1,winners[i],winners[i+1]));this.phase="tournament";this.message=`Round ${this.roundNumber} matchups are ready. Host can begin the round.`;}
+  private isTournamentDone(){const active=[...this.players.values()].filter(p=>!p.eliminated&&this.bracket.some(m=>m.p1===p.id||m.p2===p.id));return active.length===1&&this.bracket.some(m=>m.status==="done");}
+  private backToLobby(){this.clearAllTimers();this.runtimes.clear();this.phase="lobby";this.bracket=[];this.roundNumber=0;for(const p of this.players.values())p.eliminated=false;this.autoSizeToHumans();this.message="Back in the lobby. Ankles reset.";}
+  private clearRuntimeTimer(r:MatchRuntime){if(r.timer){clearTimeout(r.timer);r.timer=null;}}
+  private clearAllTimers(){for(const r of this.runtimes.values())this.clearRuntimeTimer(r);}
+  private nameOf(id:string){return this.players.get(id)?.name??"Mystery Player";}
 }

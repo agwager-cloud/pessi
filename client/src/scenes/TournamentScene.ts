@@ -50,8 +50,9 @@ export class TournamentScene extends Phaser.Scene {
     this.add.rectangle(W / 2, H / 2, W, H, 0x04130b, 0.44).setOrigin(0.5);
 
     const isRoundResults = state.phase === "roundResults";
+    const isRoundLive = state.phase === "roundLive";
     
-    addTopBar(this, state, isRoundResults ? `Round ${state.roundNumber} complete • winners are highlighted` : `Tournament bracket • Round ${state.roundNumber}`);
+    addTopBar(this, state, isRoundResults ? `Round ${state.roundNumber} complete • winners are highlighted` : isRoundLive ? `Round ${state.roundNumber} is live • human matches are playing simultaneously` : `Tournament bracket • Round ${state.roundNumber}`);
 
     const isHost = Net.sessionId === state.hostId;
     const total = Math.max(2, state.tournamentSize);
@@ -80,7 +81,11 @@ export class TournamentScene extends Phaser.Scene {
       strokeThickness: 3
     }).setOrigin(0.5);
 
-    if (isHost) {
+    if (isRoundLive) {
+      this.add.text(panelX + panelW - 158, panelY + 34, "MATCHES LIVE", {
+        fontFamily: "Arial", fontSize: "18px", fontStyle: "900", color: "#fff2a6", stroke: "#000000", strokeThickness: 4
+      }).setOrigin(0.5);
+    } else if (isHost) {
       const buttonLabel = isRoundResults ? "START NEXT ROUND" : `BEGIN ROUND ${state.roundNumber}`;
       const buttonType = isRoundResults ? "nextRound" : "beginRound";
       const buttonW = isRoundResults ? 286 : 268;
@@ -118,7 +123,9 @@ export class TournamentScene extends Phaser.Scene {
       ? `Only Round ${state.roundNumber} results are shown here. Earlier scores are hidden so the current winners stay readable.`
       : isRoundResults
         ? "Round complete. Winners are highlighted in gold. Host can build the next round when ready."
-        : (showFocusedCurrentRound ? "Only the upcoming round matchups are shown here so the next games are easy to read." : state.message);
+        : isRoundLive
+          ? state.message
+          : (showFocusedCurrentRound ? "Only the upcoming round matchups are shown here so the next games are easy to read." : state.message);
     this.add.text(W / 2, 690, footer, {
       fontFamily: "Arial",
       fontSize: "20px",

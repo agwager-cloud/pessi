@@ -3,7 +3,7 @@ import type { PublicState } from "../types";
 
 export function routeForPhase(phase: PublicState["phase"]): string {
   if (phase === "lobby") return "LobbyScene";
-  if (phase === "tournament") return "TournamentScene";
+  if (phase === "tournament" || phase === "roundLive") return "TournamentScene";
   if (phase === "tackle") return "TackleScene";
   if (phase === "penalty" || phase === "penaltyResult") return "PenaltyScene";
   if (phase === "roundResults") return "TournamentScene";
