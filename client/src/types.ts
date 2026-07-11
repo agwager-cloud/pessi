@@ -66,6 +66,7 @@ export type TackleState = {
   goalieX: number;
   goalieY: number;
   tackleText: string;
+  tackleStyle: "slide" | "flyingKick" | "spinKick";
   startedAt: number;
   timeoutAt: number;
   impactAt?: number | null;

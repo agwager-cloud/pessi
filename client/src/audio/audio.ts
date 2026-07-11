@@ -479,11 +479,23 @@ export async function playTackleImpactSequence(): Promise<void> {
 
 export function playPlayerName(playerCharacterName: string): HTMLAudioElement | null {
   const fileName = PLAYER_NAME_FILE_OVERRIDES[playerCharacterName] ?? `${playerCharacterName}.mp3`;
-  return playSfxFile(fileName, {
+  const restoreVolume = desiredTrack ? VOLUMES[desiredTrack] : (audio?.volume ?? 0);
+  const shouldDuckMusic = Boolean(audio && !audio.paused && !muted);
+  if (shouldDuckMusic && audio) audio.volume = Math.min(audio.volume, 0.16);
+
+  const clip = playSfxFile(fileName, {
     channel: "playerName",
-    volume: 0.86,
+    volume: 1.0,
     restartChannel: true,
   });
+  if (clip && shouldDuckMusic) {
+    const restore = () => {
+      if (!muted && desiredTrack && audio) void fadeTo(restoreVolume, 180);
+    };
+    clip.addEventListener("ended", restore, { once: true });
+    clip.addEventListener("error", restore, { once: true });
+  }
+  return clip;
 }
 
 export async function playWinnerAnnouncement(playerCharacterName: string): Promise<void> {

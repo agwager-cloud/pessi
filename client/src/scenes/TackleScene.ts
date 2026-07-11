@@ -3,7 +3,7 @@ import { CHARACTERS, type Character } from "@pessi/shared";
 import { Net } from "../net/Net";
 import { playMusic, playTackleImpactSequence, preloadAudio, stopSfxChannel } from "../audio/audio";
 import type { PlayerRecord, PublicState } from "../types";
-import { addButton, addTopBar, drawFootballer, drawPitch, getPlayer, playerLabel, W, H } from "../ui/ui";
+import { addButton, addTopBar, drawArcadeBall, drawFootballer, drawPitch, getPlayer, playerLabel, W, H } from "../ui/ui";
 import { routeScene } from "../ui/routing";
 
 const BASE_FLOP_LINES = [
@@ -654,6 +654,8 @@ export class TackleScene extends Phaser.Scene {
   private keys?: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd: Record<string, Phaser.Input.Keyboard.Key> = {};
   private lastMove = 0;
+  private touchDx = 0;
+  private touchDy = 0;
   private flopSelections = new Map<string, [string, string]>();
   private usedFlopLines = new Set<string>();
   private activeFlopGameKey = "";
@@ -686,13 +688,15 @@ export class TackleScene extends Phaser.Scene {
   update(time: number) {
     const s = this.currentState;
     if (!s?.tackle || s.tackle.kickerId !== Net.sessionId || s.tackle.impactAt) return;
-    if (time - this.lastMove < 115) return;
-    let dx = 0;
-    let dy = 0;
+    if (time - this.lastMove < 70) return;
+    let dx = this.touchDx;
+    let dy = this.touchDy;
     if (this.keys?.left.isDown || this.wasd.A?.isDown) dx -= 1;
     if (this.keys?.right.isDown || this.wasd.D?.isDown) dx += 1;
     if (this.keys?.up.isDown || this.wasd.W?.isDown) dy -= 1;
     if (this.keys?.down.isDown || this.wasd.S?.isDown) dy += 1;
+    dx = Phaser.Math.Clamp(dx, -1, 1);
+    dy = Phaser.Math.Clamp(dy, -1, 1);
     if (dx || dy) {
       Net.send("move", { dx, dy });
       this.lastMove = time;
@@ -700,6 +704,8 @@ export class TackleScene extends Phaser.Scene {
   }
 
   shutdown() {
+    this.touchDx = 0;
+    this.touchDy = 0;
     this.unsub?.();
     this.soundPlayedForTackleImpactKey = null;
     stopSfxChannel("commentary");
@@ -743,8 +749,8 @@ export class TackleScene extends Phaser.Scene {
       this.playTackleCommentaryOnce(t);
       this.drawImpactAnimation(t.kickerX, t.kickerY, t.goalieX, t.goalieY, kicker, goalie, impactElapsed, t);
     } else {
-      this.drawChaseAnimation(t.kickerX, t.kickerY, t.goalieX, t.goalieY, kicker, goalie);
-      this.add.circle(t.kickerX + 36, t.kickerY + 34, 14, 0xffffff).setStrokeStyle(4, 0x111111);
+      this.drawChaseAnimation(t.kickerX, t.kickerY, t.goalieX, t.goalieY, kicker, goalie, t.tackleStyle);
+      drawArcadeBall(this, t.kickerX + 38, t.kickerY + 35, 14, 18).setRotation(this.time.now / 260);
     }
 
     const remaining = Math.max(0, Math.ceil((t.timeoutAt - Date.now()) / 1000));
@@ -817,7 +823,7 @@ export class TackleScene extends Phaser.Scene {
     }).setOrigin(0.5);
   }
 
-  private drawChaseAnimation(kx: number, ky: number, gx: number, gy: number, kicker: PlayerRecord | null, goalie: PlayerRecord | null) {
+  private drawChaseAnimation(kx: number, ky: number, gx: number, gy: number, kicker: PlayerRecord | null, goalie: PlayerRecord | null, style: "slide" | "flyingKick" | "spinKick") {
     const dx = kx - gx;
     const dy = ky - gy;
     const dist = Math.hypot(dx, dy);
@@ -832,9 +838,20 @@ export class TackleScene extends Phaser.Scene {
     const goalieSprite = drawFootballer(this, gx, gy, goalie, 0.94, true);
 
     if (close) {
-      goalieSprite.setRotation(-0.72);
-      goalieSprite.setScale(1.04, 0.92);
-      this.drawSlideTrail(gx + 12, gy + 50, 0xffdf5c, "WHOOSH!");
+      if (style === "flyingKick") {
+        goalieSprite.setRotation(-1.38);
+        goalieSprite.setScale(1.16, 0.84);
+        goalieSprite.y -= 28;
+        this.drawSlideTrail(gx + 8, gy + 28, 0x11b9e8, "FLYING KICK!");
+      } else if (style === "spinKick") {
+        goalieSprite.setRotation(this.time.now / 150);
+        goalieSprite.setScale(1.08, 0.92);
+        this.drawSlideTrail(gx + 12, gy + 48, 0xe33b32, "SPIN KICK!");
+      } else {
+        goalieSprite.setRotation(-0.72);
+        goalieSprite.setScale(1.04, 0.92);
+        this.drawSlideTrail(gx + 12, gy + 50, 0xffdf5c, "SLIDE TACKLE!");
+      }
       this.drawWarningBurst((kx + gx) / 2, (ky + gy) / 2 - 35);
     } else {
       this.drawMotionLines(gx - 56, gy + 28);
@@ -860,10 +877,20 @@ export class TackleScene extends Phaser.Scene {
 
     this.drawExplosion(kx + 18, ky + 38, elapsed);
     this.drawRollTrack(rollX, rollY, elapsed);
-    this.drawSlideTrail(gx, gy + 46, 0xffaa00, "CRUNCH!");
+    const style = tackle.tackleStyle ?? "slide";
+    this.drawSlideTrail(gx, gy + 46, style === "flyingKick" ? 0x11b9e8 : style === "spinKick" ? 0xe33b32 : 0xffaa00, style === "flyingKick" ? "KAPOW!" : style === "spinKick" ? "WHIRL!" : "CRUNCH!");
     const goalieSprite = drawFootballer(this, gx + 18, gy + 24, goalie, 0.92, true);
-    goalieSprite.setRotation(-1.18);
-    goalieSprite.setScale(1.08, 0.82);
+    if (style === "flyingKick") {
+      goalieSprite.setRotation(-1.55);
+      goalieSprite.setScale(1.18, 0.78);
+      goalieSprite.y -= 34;
+    } else if (style === "spinKick") {
+      goalieSprite.setRotation(elapsed / 130);
+      goalieSprite.setScale(1.08, 0.90);
+    } else {
+      goalieSprite.setRotation(-1.18);
+      goalieSprite.setScale(1.08, 0.82);
+    }
 
     this.drawFloppingFootballer(rollX, rollY - bounce, kicker, rollAngle, phase, elapsed);
     this.drawLooseBall(rollX + 54 + Math.sin(elapsed / 170) * 18, rollY + 10 - bounce * 0.45, elapsed);
@@ -917,11 +944,19 @@ export class TackleScene extends Phaser.Scene {
 
   private drawFloppingFootballer(x: number, y: number, player: PlayerRecord | null, rollAngle: number, phase: number, elapsed: number) {
     const container = drawFootballer(this, x, y, player, 0.82, false);
-    container.setRotation(rollAngle);
-    container.setScale(
-      1.02 + Math.sin(elapsed / 150) * 0.10,
-      0.82 + Math.cos(elapsed / 180) * 0.12
-    );
+    const flopVariant = Math.abs(Math.floor((x + y) / 37)) % 3;
+    if (flopVariant === 0) {
+      container.setRotation(rollAngle);
+      container.setScale(1.02 + Math.sin(elapsed / 150) * 0.10, 0.82 + Math.cos(elapsed / 180) * 0.12);
+    } else if (flopVariant === 1) {
+      container.setRotation(-rollAngle * 0.72);
+      container.setScale(0.88 + Math.sin(elapsed / 125) * 0.13, 1.04 + Math.cos(elapsed / 160) * 0.10);
+      container.y -= Math.abs(Math.sin(elapsed / 180)) * 22;
+    } else {
+      container.setRotation(Math.sin(elapsed / 180) * 1.25);
+      container.setScale(1.10, 0.76 + Math.abs(Math.cos(elapsed / 150)) * 0.20);
+      container.x += Math.sin(elapsed / 105) * 18;
+    }
 
     // A clearer "rolling around" outline so the simple procedural player reads as tumbling.
     const g = this.add.graphics();
@@ -945,13 +980,7 @@ export class TackleScene extends Phaser.Scene {
   }
 
   private drawLooseBall(x: number, y: number, elapsed: number) {
-    const ball = this.add.circle(x, y, 14, 0xffffff).setStrokeStyle(4, 0x111111);
-    ball.setRotation(elapsed / 120);
-    this.add.text(x, y, "⚽", {
-      fontFamily: "Arial",
-      fontSize: "20px",
-      color: "#000000"
-    }).setOrigin(0.5).setRotation(elapsed / 120);
+    drawArcadeBall(this, x, y, 14, 24).setRotation(elapsed / 120);
   }
 
   private drawSlideTrail(x: number, y: number, color: number, label: string) {
@@ -1050,9 +1079,30 @@ export class TackleScene extends Phaser.Scene {
   private addDpad() {
     const x = 132;
     const y = 574;
-    addButton(this, x, y - 62, 70, 58, "▲", () => Net.send("move", { dx: 0, dy: -1 }), 0x143d2a);
-    addButton(this, x, y + 62, 70, 58, "▼", () => Net.send("move", { dx: 0, dy: 1 }), 0x143d2a);
-    addButton(this, x - 76, y, 70, 58, "◀", () => Net.send("move", { dx: -1, dy: 0 }), 0x143d2a);
-    addButton(this, x + 76, y, 70, 58, "▶", () => Net.send("move", { dx: 1, dy: 0 }), 0x143d2a);
+    this.addHoldButton(x, y - 62, 70, 58, "▲", 0, -1);
+    this.addHoldButton(x, y + 62, 70, 58, "▼", 0, 1);
+    this.addHoldButton(x - 76, y, 70, 58, "◀", -1, 0);
+    this.addHoldButton(x + 76, y, 70, 58, "▶", 1, 0);
+  }
+
+  private addHoldButton(x: number, y: number, w: number, h: number, label: string, dx: number, dy: number) {
+    const bg = this.add.rectangle(x, y, w, h, 0x143d2a, 0.94).setStrokeStyle(3, 0xffffff, 0.72).setInteractive({ useHandCursor: true });
+    this.add.text(x, y, label, { fontFamily: "Arial", fontSize: "28px", fontStyle: "900", color: "#ffffff", stroke: "#000000", strokeThickness: 4 }).setOrigin(0.5);
+    const press = (pointer: Phaser.Input.Pointer) => {
+      pointer.event?.preventDefault?.();
+      this.touchDx = dx;
+      this.touchDy = dy;
+      bg.setFillStyle(0x1f7a4b, 1).setScale(0.95);
+      Net.send("move", { dx, dy });
+    };
+    const release = () => {
+      if (this.touchDx === dx) this.touchDx = 0;
+      if (this.touchDy === dy) this.touchDy = 0;
+      bg.setFillStyle(0x143d2a, 0.94).setScale(1);
+    };
+    bg.on("pointerdown", press);
+    bg.on("pointerup", release);
+    bg.on("pointerout", release);
+    bg.on("pointerupoutside", release);
   }
 }

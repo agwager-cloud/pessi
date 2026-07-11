@@ -3,7 +3,7 @@ import { CHARACTERS, GOAL_ZONES, type GoalZone } from "@pessi/shared";
 import { Net } from "../net/Net";
 import { playMusic, playRandomCommentary, playRandomCrowd, preloadAudio, stopSfxChannel } from "../audio/audio";
 import type { BracketMatch, PlayerRecord, PublicState } from "../types";
-import { addButton, addTopBar, drawFootballer, getPlayer, playerLabel, W, H } from "../ui/ui";
+import { addButton, addTopBar, drawArcadeBall, drawFootballer, getPlayer, playerLabel, W, H } from "../ui/ui";
 import { routeScene } from "../ui/routing";
 
 const GOAL = { x: 256, y: 142, w: 768, h: 278 };
@@ -489,14 +489,7 @@ export class PenaltyScene extends Phaser.Scene {
   }
 
   private drawBall(x: number, y: number, radius: number, depth: number): Phaser.GameObjects.Container {
-    const ball = this.add.container(x, y).setDepth(depth);
-    const shadow = this.add.ellipse(4, radius + 5, radius * 1.6, radius * 0.48, 0x000000, 0.28);
-    const outer = this.add.circle(0, 0, radius, 0xffffff).setStrokeStyle(Math.max(2, radius * 0.18), 0x111111, 1);
-    const p1 = this.add.circle(-radius * 0.32, -radius * 0.25, radius * 0.26, 0x1c3fba, 0.95);
-    const p2 = this.add.circle(radius * 0.34, radius * 0.18, radius * 0.22, 0x1c3fba, 0.95);
-    const shine = this.add.circle(-radius * 0.32, -radius * 0.42, radius * 0.17, 0xffffff, 0.55);
-    ball.add([shadow, outer, p1, p2, shine]);
-    return ball;
+    return drawArcadeBall(this, x, y, radius, depth);
   }
 
   private drawAnimatedGoalie(state: PublicState, goalie: PlayerRecord | null) {
@@ -716,6 +709,25 @@ export class PenaltyScene extends Phaser.Scene {
     if (key && elapsed > 1600) this.completedResultFrameKey = key;
   }
 
+  private playCinematicResultBurst(e: NonNullable<PublicState["lastShot"]>) {
+    this.cameras.main.shake(e.goal ? 260 : e.saved ? 180 : 130, e.goal ? 0.010 : 0.006);
+    const colour = e.goal ? 0xffd21f : e.saved ? 0x6db6ff : 0xff6b45;
+    const label = e.goal ? "GOOOAL!" : e.saved ? "SUPER SAVE!" : "OFF TARGET!";
+    const flash = this.add.rectangle(W / 2, H / 2, W, H, colour, e.goal ? 0.20 : 0.12).setDepth(90);
+    this.tweens.add({ targets: flash, alpha: 0, duration: 440, ease: "Cubic.easeOut", onComplete: () => flash.destroy() });
+    const banner = this.add.text(W / 2, 330, label, {
+      fontFamily: "Arial", fontSize: e.goal ? "58px" : "48px", fontStyle: "900",
+      color: e.goal ? "#fff2a6" : "#ffffff", stroke: "#000000", strokeThickness: 8
+    }).setOrigin(0.5).setDepth(95).setScale(0.35).setAlpha(0);
+    this.tweens.add({ targets: banner, alpha: 1, scale: 1.08, duration: 220, ease: "Back.easeOut", yoyo: true, hold: 520, onComplete: () => banner.destroy() });
+    if (e.goal) {
+      for (let i = 0; i < 28; i++) {
+        const piece = this.add.rectangle(W / 2 + Phaser.Math.Between(-120, 120), 220, 7, 16, [0xffd21f,0x11b9e8,0xe33b32,0x1aa75b][i % 4], 0.95).setDepth(94).setAngle(Phaser.Math.Between(0, 180));
+        this.tweens.add({ targets: piece, x: piece.x + Phaser.Math.Between(-260, 260), y: Phaser.Math.Between(420, 650), angle: piece.angle + Phaser.Math.Between(180, 720), alpha: 0, duration: Phaser.Math.Between(850, 1350), ease: "Quad.easeIn", onComplete: () => piece.destroy() });
+      }
+    }
+  }
+
   private createResultAnimationObjects(state: PublicState, key: string) {
     this.destroyResultAnimationObjects();
     const e = state.lastShot;
@@ -723,6 +735,7 @@ export class PenaltyScene extends Phaser.Scene {
     const kicker = getPlayer(state, e.kickerId);
     const goalie = getPlayer(state, e.goalieId);
 
+    this.playCinematicResultBurst(e);
     this.resultObjectsKey = key;
     this.resultTrail = this.add.graphics().setDepth(31);
     this.resultDiveArrow = this.add.graphics().setDepth(30);

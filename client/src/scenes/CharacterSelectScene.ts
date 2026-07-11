@@ -190,15 +190,16 @@ export class CharacterSelectScene extends Phaser.Scene {
         eliminated: false,
         wins: 0
       };
-      // Keep the sprite slightly higher so the lower third of every card is
-      // reserved exclusively for the name and country/jersey labels.
-      const footballer = drawFootballer(this, 0, -30, fakePlayer, 0.36, false);
+      // Hotfix 67: enlarge and lower the footballer so the portrait, name and
+      // country read as one compact group instead of three widely separated
+      // elements. The bottom text bands remain reserved to prevent overlap.
+      const footballer = drawFootballer(this, 0, -15, fakePlayer, 0.41, false);
       card.add(footballer);
 
-      // Hotfix 66: use two non-overlapping text bands. Long names may wrap to
-      // two lines, but the country/jersey line always remains in its own band.
-      const nameSize = character.name.length > 20 ? 9 : character.name.length > 16 ? 10 : 11;
-      card.add(this.add.text(0, 10, character.name, {
+      // Responsive text sizing keeps ordinary names prominent while allowing
+      // the longest names to wrap safely to a second line above the country.
+      const nameSize = character.name.length > 22 ? 10 : character.name.length > 17 ? 11 : 12;
+      card.add(this.add.text(0, 14, character.name, {
         fontFamily: "Arial",
         fontSize: `${nameSize}px`,
         fontStyle: "900",
@@ -206,14 +207,14 @@ export class CharacterSelectScene extends Phaser.Scene {
         stroke: "#000000",
         strokeThickness: 3,
         align: "center",
-        lineSpacing: -1,
-        wordWrap: { width: cardW - 12, useAdvancedWrap: true },
-        fixedWidth: cardW - 10,
-        fixedHeight: 28
+        lineSpacing: -2,
+        wordWrap: { width: cardW - 10, useAdvancedWrap: true },
+        fixedWidth: cardW - 8,
+        fixedHeight: 29
       }).setOrigin(0.5, 0));
-      card.add(this.add.text(0, cardH / 2 - 8, `${character.country}  #${character.number}`, {
+      card.add(this.add.text(0, cardH / 2 - 8, `${character.country}  •  #${character.number}`, {
         fontFamily: "Arial",
-        fontSize: "9px",
+        fontSize: "10px",
         fontStyle: "bold",
         color: "#fff2a6",
         stroke: "#000000",

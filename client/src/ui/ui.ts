@@ -106,6 +106,43 @@ export function drawPitch(scene: Phaser.Scene) {
   return g;
 }
 
+
+export function drawArcadeBall(
+  scene: Phaser.Scene,
+  x: number,
+  y: number,
+  radius = 16,
+  depth = 20
+): Phaser.GameObjects.Container {
+  const ball = scene.add.container(x, y).setDepth(depth);
+  const g = scene.add.graphics();
+  g.fillStyle(0x000000, 0.25);
+  g.fillEllipse(4, radius + 6, radius * 1.7, radius * 0.48);
+  g.fillStyle(0xf8fbff, 1);
+  g.lineStyle(Math.max(2, radius * 0.13), 0x26384f, 1);
+  g.fillCircle(0, 0, radius);
+  g.strokeCircle(0, 0, radius);
+
+  // Original abstract tournament pattern: bright sweeping panels, no logos.
+  g.fillStyle(0x11b9e8, 0.96);
+  g.fillEllipse(radius * 0.35, -radius * 0.24, radius * 0.78, radius * 0.42);
+  g.fillStyle(0xe33b32, 0.96);
+  g.fillTriangle(-radius * 0.95, radius * 0.05, -radius * 0.12, -radius * 0.18, -radius * 0.48, radius * 0.82);
+  g.fillStyle(0x1aa75b, 0.96);
+  g.fillEllipse(-radius * 0.08, radius * 0.70, radius * 0.92, radius * 0.25);
+  g.lineStyle(Math.max(2, radius * 0.13), 0x7b2634, 0.95);
+  g.beginPath();
+  g.arc(0, 0, radius * 0.70, -2.18, 0.36, false);
+  g.strokePath();
+  g.lineStyle(Math.max(1, radius * 0.08), 0x174aa8, 0.92);
+  g.beginPath();
+  g.arc(radius * 0.12, -radius * 0.05, radius * 0.58, -1.65, 0.95, false);
+  g.strokePath();
+  g.fillStyle(0xffffff, 0.58);
+  g.fillCircle(-radius * 0.34, -radius * 0.43, radius * 0.18);
+  ball.add(g);
+  return ball;
+}
 export function drawGoal(scene: Phaser.Scene, x: number, y: number, w: number, h: number) {
   const g = scene.add.graphics();
   g.fillStyle(0xffffff, 0.12);
