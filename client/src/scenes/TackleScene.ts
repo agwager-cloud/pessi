@@ -656,6 +656,8 @@ export class TackleScene extends Phaser.Scene {
   private lastMove = 0;
   private touchDx = 0;
   private touchDy = 0;
+  private activeTouchDirections = new Map<number, { dx: number; dy: number }>();
+  private controlsCreated = false;
   private flopSelections = new Map<string, [string, string]>();
   private usedFlopLines = new Set<string>();
   private activeFlopGameKey = "";
@@ -675,6 +677,8 @@ export class TackleScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.DESTROY, () => this.unsub?.());
     this.keys = this.input.keyboard?.createCursorKeys();
     this.wasd = this.input.keyboard?.addKeys("W,A,S,D") as Record<string, Phaser.Input.Keyboard.Key>;
+    this.input.on("pointerup", (pointer: Phaser.Input.Pointer) => this.releaseTouchDirection(pointer.id));
+    this.input.on("gameout", () => this.clearTouchDirections());
     this.unsub = Net.onState((state) => {
       if (!this.scene.isActive("TackleScene")) return;
       routeScene(this, state);
@@ -687,8 +691,10 @@ export class TackleScene extends Phaser.Scene {
 
   update(time: number) {
     const s = this.currentState;
-    if (!s?.tackle || s.tackle.kickerId !== Net.sessionId || s.tackle.impactAt) return;
-    if (time - this.lastMove < 70) return;
+    if (!s?.tackle || s.tackle.impactAt) return;
+    const canMove = s.tackle.kickerId === Net.sessionId || s.tackle.goalieId === Net.sessionId;
+    if (!canMove || s.isSpectating) return;
+    if (time - this.lastMove < 55) return;
     let dx = this.touchDx;
     let dy = this.touchDy;
     if (this.keys?.left.isDown || this.wasd.A?.isDown) dx -= 1;
@@ -704,8 +710,8 @@ export class TackleScene extends Phaser.Scene {
   }
 
   shutdown() {
-    this.touchDx = 0;
-    this.touchDy = 0;
+    this.clearTouchDirections();
+    this.controlsCreated = false;
     this.unsub?.();
     this.soundPlayedForTackleImpactKey = null;
     stopSfxChannel("commentary");
@@ -725,7 +731,9 @@ export class TackleScene extends Phaser.Scene {
 
   private render(state: PublicState) {
     this.resetFlopMemoryIfNewGame(state);
-    [...this.children.list].forEach((child) => child.destroy());
+    [...this.children.list].forEach((child) => {
+      if (!child.getData?.("persistentControl")) child.destroy();
+    });
     drawPitch(this);
     const t = state.tackle;
     addTopBar(this, state, state.isSpectating ? `LIVE SPECTATOR • ${state.message}` : state.message);
@@ -759,7 +767,7 @@ export class TackleScene extends Phaser.Scene {
       : isKicker
         ? "You are dribbling. Dodge around for fun — the goalie is hunting for drama!"
         : isGoalie
-          ? "You are the goalie. Your ridiculous slide tackle is automatic."
+          ? "You are the defender. Chase them down — you move faster and the tackle lands within 5 seconds!"
           : "Spectator mode: watch the pre-penalty nonsense unfold.";
 
     this.add.text(W / 2, H - 74, instruction, {
@@ -782,7 +790,7 @@ export class TackleScene extends Phaser.Scene {
       strokeThickness: 5
     }).setOrigin(0.5);
 
-    if (isKicker && !impactAt) this.addDpad();
+    if ((isKicker || isGoalie) && !impactAt && !state.isSpectating) this.addDpad(isGoalie ? "CHASE" : "DODGE");
   }
 
   private drawSceneHeader(state: PublicState, p1Score: number, p2Score: number) {
@@ -1076,33 +1084,70 @@ export class TackleScene extends Phaser.Scene {
     }).setOrigin(0.5);
   }
 
-  private addDpad() {
+  private addDpad(roleLabel: "DODGE" | "CHASE") {
+    if (this.controlsCreated) return;
+    this.controlsCreated = true;
     const x = 132;
     const y = 574;
-    this.addHoldButton(x, y - 62, 70, 58, "▲", 0, -1);
-    this.addHoldButton(x, y + 62, 70, 58, "▼", 0, 1);
-    this.addHoldButton(x - 76, y, 70, 58, "◀", -1, 0);
-    this.addHoldButton(x + 76, y, 70, 58, "▶", 1, 0);
+    const role = this.add.text(x, y - 105, roleLabel, {
+      fontFamily: "Arial", fontSize: "18px", fontStyle: "900", color: "#fff2a6",
+      stroke: "#000000", strokeThickness: 4
+    }).setOrigin(0.5).setDepth(1000).setData("persistentControl", true);
+    role.setScrollFactor(0);
+    this.addHoldButton(x, y - 62, 74, 60, "▲", 0, -1);
+    this.addHoldButton(x, y + 62, 74, 60, "▼", 0, 1);
+    this.addHoldButton(x - 78, y, 74, 60, "◀", -1, 0);
+    this.addHoldButton(x + 78, y, 74, 60, "▶", 1, 0);
+  }
+
+  private recomputeTouchVector() {
+    let dx = 0;
+    let dy = 0;
+    for (const direction of this.activeTouchDirections.values()) {
+      dx += direction.dx;
+      dy += direction.dy;
+    }
+    this.touchDx = Phaser.Math.Clamp(dx, -1, 1);
+    this.touchDy = Phaser.Math.Clamp(dy, -1, 1);
+  }
+
+  private releaseTouchDirection(pointerId: number) {
+    this.activeTouchDirections.delete(pointerId);
+    this.recomputeTouchVector();
+  }
+
+  private clearTouchDirections() {
+    this.activeTouchDirections.clear();
+    this.touchDx = 0;
+    this.touchDy = 0;
   }
 
   private addHoldButton(x: number, y: number, w: number, h: number, label: string, dx: number, dy: number) {
-    const bg = this.add.rectangle(x, y, w, h, 0x143d2a, 0.94).setStrokeStyle(3, 0xffffff, 0.72).setInteractive({ useHandCursor: true });
-    this.add.text(x, y, label, { fontFamily: "Arial", fontSize: "28px", fontStyle: "900", color: "#ffffff", stroke: "#000000", strokeThickness: 4 }).setOrigin(0.5);
+    const bg = this.add.rectangle(x, y, w, h, 0x143d2a, 0.96)
+      .setStrokeStyle(3, 0xffffff, 0.78)
+      .setInteractive({ useHandCursor: true })
+      .setDepth(1000)
+      .setData("persistentControl", true);
+    const text = this.add.text(x, y, label, {
+      fontFamily: "Arial", fontSize: "30px", fontStyle: "900", color: "#ffffff",
+      stroke: "#000000", strokeThickness: 4
+    }).setOrigin(0.5).setDepth(1001).setData("persistentControl", true);
+    text.setScrollFactor(0);
+    bg.setScrollFactor(0);
+
     const press = (pointer: Phaser.Input.Pointer) => {
       pointer.event?.preventDefault?.();
-      this.touchDx = dx;
-      this.touchDy = dy;
-      bg.setFillStyle(0x1f7a4b, 1).setScale(0.95);
-      Net.send("move", { dx, dy });
+      this.activeTouchDirections.set(pointer.id, { dx, dy });
+      this.recomputeTouchVector();
+      bg.setFillStyle(0x1f8f55, 1).setScale(0.94);
+      Net.send("move", { dx: this.touchDx, dy: this.touchDy });
     };
-    const release = () => {
-      if (this.touchDx === dx) this.touchDx = 0;
-      if (this.touchDy === dy) this.touchDy = 0;
-      bg.setFillStyle(0x143d2a, 0.94).setScale(1);
+    const release = (pointer: Phaser.Input.Pointer) => {
+      this.releaseTouchDirection(pointer.id);
+      bg.setFillStyle(0x143d2a, 0.96).setScale(1);
     };
     bg.on("pointerdown", press);
     bg.on("pointerup", release);
-    bg.on("pointerout", release);
     bg.on("pointerupoutside", release);
   }
 }
