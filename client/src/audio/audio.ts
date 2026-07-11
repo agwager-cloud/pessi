@@ -474,7 +474,17 @@ export async function playTackleImpactSequence(): Promise<void> {
   });
 
   if (muted) return;
-  playRandomCommentary("tackle");
+
+  // Wait for the complete spoken phrase before resolving. TackleScene uses this
+  // promise to hold the transition into PenaltyScene, preventing longer funny
+  // commentary clips from being cut off by the next authoritative phase update.
+  const index = nextCommentaryIndex("tackle");
+  await playSfxFileAndWait(`commentaryTackle${index}.mp3`, {
+    channel: "commentary",
+    volume: 0.96,
+    restartChannel: true,
+    maxWaitMs: 9000,
+  });
 }
 
 export function playPlayerName(playerCharacterName: string): HTMLAudioElement | null {

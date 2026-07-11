@@ -168,6 +168,7 @@ export class GameRoom {
     else if(type==="watchMatch") this.watchMatch(client,String(data??""));
     else if(type==="stopWatching") this.stopWatching(client);
     else if(type==="nextRound") this.hostOnly(client,()=>this.nextRoundFromResults());
+    else if(type==="playAgain") this.hostOnly(client,()=>this.playAgain());
     else if(type==="backToLobby") this.hostOnly(client,()=>this.backToLobby());
   }
   private hostOnly(c:ClientSocket,fn:()=>void){ if(c.sessionId!==this.hostId)return; fn(); this.broadcastState(); }
@@ -251,7 +252,7 @@ export class GameRoom {
   private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
   private matchById(id:string){return this.bracket.find(m=>m.id===id)??null;}
   private autoResolveBotMatch(m:BracketMatch){m.status="playing";m.p1Score=Math.random()<.72?1:0;m.p2Score=Math.random()<.72?1:0;if(m.p1Score===m.p2Score){for(let i=0;i<5;i++){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}while(m.p1Shootout===m.p2Shootout){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}}const w=m.p1Score*10+m.p1Shootout>=m.p2Score*10+m.p2Shootout?m.p1:m.p2;this.markFinished(m,w,w===m.p1?m.p2:m.p1);}
-  private startTackle(r:MatchRuntime,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now();r.phase="tackle";r.activePenalty=null;r.lastShot=null;r.tackle={kickerId,goalieId,kickerX:300,kickerY:360,goalieX:1080,goalieY:360,tackleText:randomFrom(TACKLE_LINES),tackleStyle:randomFrom(["slide","flyingKick","spinKick"] as const),startedAt:now,timeoutAt:now+5000,impactAt:null};r.message=`${this.nameOf(goalieId)} is approaching for a ${r.tackle.tackleText}!`;}
+  private startTackle(r:MatchRuntime,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now();r.phase="tackle";r.activePenalty=null;r.lastShot=null;r.tackle={kickerId,goalieId,kickerX:300,kickerY:360,goalieX:1080,goalieY:360,tackleText:randomFrom(TACKLE_LINES),tackleStyle:randomFrom(["slide","flyingKick","spinKick","shoulderCharge","cartwheel","scissorKick"] as const),flopStyle:randomFrom(["barrelRoll","helicopter","starfish","backflip","ragdoll","somersault"] as const),startedAt:now,timeoutAt:now+5000,impactAt:null};r.message=`${this.nameOf(goalieId)} is approaching for a ${r.tackle.tackleText}!`;}
   private startPenalty(r:MatchRuntime,mode:ShotMode,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now(),bot=!!this.players.get(kickerId)?.isBot,delay=5200;r.phase="penalty";r.tackle=null;r.lastShot=null;r.activePenalty={mode,kickerId,goalieId,shotLabel:this.shotLabel(r,mode,kickerId),goaliePick:this.players.get(goalieId)?.isBot?randomFrom(GOAL_ZONES):null,startedAt:now,timeoutAt:now+(bot?delay:22000)};r.message=bot?`${this.nameOf(kickerId)} is winding up. Bot shot in 5 seconds!`:`${this.nameOf(kickerId)} steps up against ${this.nameOf(goalieId)}.`;if(bot)r.timer=setTimeout(()=>{if(r.activePenalty?.kickerId===kickerId)this.resolveShot(r,{aimX:Math.random(),aimY:Math.random(),power:45+Math.random()*48});},delay);}
   private shotLabel(r:MatchRuntime,mode:ShotMode,kickerId:string){const m=this.matchById(r.matchId);if(!m)return"Penalty";if(mode==="regular")return`${this.nameOf(kickerId)} regular penalty`;const n=kickerId===m.p1?m.p1ShootoutTaken+1:m.p2ShootoutTaken+1;return n<=5?`Shootout kick ${n} of 5`:`Sudden death kick ${n-5}`;}
   private update(){for(const r of this.runtimes.values()){if(r.phase==="tackle"&&r.tackle)this.updateTackle(r);if(r.phase==="penalty"&&r.activePenalty&&Date.now()>r.activePenalty.timeoutAt){if(!r.activePenalty.goaliePick)r.activePenalty.goaliePick="LM";this.resolveShot(r,{aimX:Math.random(),aimY:Math.random(),power:35+Math.random()*45});}}if(this.phase!=="lobby")this.broadcastState();}
@@ -281,7 +282,8 @@ export class GameRoom {
     if(dist<hitRadius||now>=t.timeoutAt){
       t.impactAt=now;t.timeoutAt=now+6500;
       t.goalieX=t.kickerX+72;t.goalieY=t.kickerY+18;
-      r.message=`${this.nameOf(t.goalieId)} launches a ${t.tackleStyle === "flyingKick" ? "flying kick" : t.tackleStyle === "spinKick" ? "spin kick" : t.tackleText}! ${this.nameOf(t.kickerId)} begins a world-class flop.`;
+      const tackleName={slide:t.tackleText,flyingKick:"flying kick",spinKick:"spin kick",shoulderCharge:"shoulder charge",cartwheel:"cartwheel tackle",scissorKick:"scissor kick"}[t.tackleStyle]??t.tackleText;
+      r.message=`${this.nameOf(t.goalieId)} launches a ${tackleName}! ${this.nameOf(t.kickerId)} begins a world-class ${t.flopStyle}.`;
     }
   }
   private handleMove(c:ClientSocket,data:unknown){
@@ -310,6 +312,25 @@ export class GameRoom {
   private checkRoundComplete(){if(this.runtimes.size>0)return;const pending=this.bracket.some(m=>m.round===this.roundNumber&&m.status!=="done");if(pending)return;this.phase=this.isTournamentDone()?"finalResults":"roundResults";this.message=this.phase==="finalResults"?"Tournament complete!":"Round complete. Host can start the next round.";}
   private nextRoundFromResults(){if(this.phase!=="roundResults")return;const winners=this.bracket.filter(m=>m.round===this.roundNumber).map(m=>m.winnerId).filter((x):x is string=>!!x);if(winners.length<=1){this.phase="finalResults";return;}this.roundNumber++;for(let i=0;i<winners.length;i+=2)this.bracket.push(this.createMatch(this.roundNumber,i/2+1,winners[i],winners[i+1]));this.phase="tournament";this.message=`Round ${this.roundNumber} matchups are ready. Host can begin the round.`;}
   private isTournamentDone(){const active=[...this.players.values()].filter(p=>!p.eliminated&&this.bracket.some(m=>m.p1===p.id||m.p2===p.id));return active.length===1&&this.bracket.some(m=>m.status==="done");}
+  private playAgain(){
+    if(this.phase!=="finalResults")return;
+    this.clearAllTimers();
+    this.runtimes.clear();
+    this.spectatorMatchByViewer.clear();
+    const entrants=[...this.players.values()].filter(p=>p.connected||p.isBot).slice(0,this.tournamentSize);
+    if(entrants.length<2){this.message="Need at least 2 players to play again.";return;}
+    for(const p of this.players.values()){
+      p.eliminated=!entrants.some(e=>e.id===p.id);
+      p.wins=0;
+    }
+    this.bracket=[];
+    this.roundNumber=1;
+    this.matchIndex=0;
+    const ids=shuffle(entrants.map(p=>p.id));
+    for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));
+    this.phase="tournament";
+    this.message="New random matchups are ready. Host can begin Round 1.";
+  }
   private backToLobby(){this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();this.phase="lobby";this.bracket=[];this.roundNumber=0;for(const p of this.players.values())p.eliminated=false;this.autoSizeToHumans();this.message="Back in the lobby. Ankles reset.";}
   private clearRuntimeTimer(r:MatchRuntime){if(r.timer){clearTimeout(r.timer);r.timer=null;}}
   private clearAllTimers(){for(const r of this.runtimes.values())this.clearRuntimeTimer(r);}

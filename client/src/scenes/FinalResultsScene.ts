@@ -176,7 +176,7 @@ export class FinalResultsScene extends Phaser.Scene {
         250,
         46,
         "PLAY AGAIN",
-        () => Net.send("backToLobby"),
+        () => Net.send("playAgain"),
         0x0b5d33,
       );
     }

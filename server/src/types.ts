@@ -67,7 +67,8 @@ export type TackleState = {
   goalieX: number;
   goalieY: number;
   tackleText: string;
-  tackleStyle: "slide" | "flyingKick" | "spinKick";
+  tackleStyle: "slide" | "flyingKick" | "spinKick" | "shoulderCharge" | "cartwheel" | "scissorKick";
+  flopStyle: "barrelRoll" | "helicopter" | "starfish" | "backflip" | "ragdoll" | "somersault";
   startedAt: number;
   timeoutAt: number;
   impactAt?: number | null;

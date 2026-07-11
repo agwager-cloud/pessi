@@ -662,6 +662,8 @@ export class TackleScene extends Phaser.Scene {
   private usedFlopLines = new Set<string>();
   private activeFlopGameKey = "";
   private soundPlayedForTackleImpactKey: string | null = null;
+  private impactAudioPromise: Promise<void> | null = null;
+  private pendingRouteState: PublicState | null = null;
 
   constructor() {
     super("TackleScene");
@@ -672,15 +674,34 @@ export class TackleScene extends Phaser.Scene {
   }
 
   create() {
+    // Phaser reuses scene instances after scene.start(). Reset every piece of
+    // transient input state here so the second tackle receives a fresh D-pad.
+    this.cleanupSceneInput();
+    this.controlsCreated = false;
+    this.currentState = null;
+    this.lastMove = 0;
+    this.soundPlayedForTackleImpactKey = null;
+    this.impactAudioPromise = null;
+    this.pendingRouteState = null;
+
     playMusic(this, "penalty");
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.unsub?.());
-    this.events.once(Phaser.Scenes.Events.DESTROY, () => this.unsub?.());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleSceneShutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.handleSceneShutdown, this);
     this.keys = this.input.keyboard?.createCursorKeys();
     this.wasd = this.input.keyboard?.addKeys("W,A,S,D") as Record<string, Phaser.Input.Keyboard.Key>;
-    this.input.on("pointerup", (pointer: Phaser.Input.Pointer) => this.releaseTouchDirection(pointer.id));
-    this.input.on("gameout", () => this.clearTouchDirections());
+    this.input.on("pointerup", this.handleGlobalPointerUp, this);
+    this.input.on("gameout", this.handleGameOut, this);
     this.unsub = Net.onState((state) => {
       if (!this.scene.isActive("TackleScene")) return;
+
+      // The server may advance to the penalty phase while a longer tackle
+      // commentary clip is still speaking. Keep the authoritative state queued
+      // and route only after the full whistle -> crowd -> commentary sequence.
+      if ((state.phase === "penalty" || state.phase === "penaltyResult") && this.impactAudioPromise) {
+        this.pendingRouteState = state;
+        return;
+      }
+
       routeScene(this, state);
       if (this.scene.isActive("TackleScene")) {
         this.currentState = state;
@@ -709,14 +730,37 @@ export class TackleScene extends Phaser.Scene {
     }
   }
 
-  shutdown() {
+  private handleGlobalPointerUp(pointer: Phaser.Input.Pointer) {
+    this.releaseTouchDirection(pointer.id);
+  }
+
+  private handleGameOut() {
     this.clearTouchDirections();
+  }
+
+  private handleSceneShutdown() {
+    this.cleanupSceneInput();
     this.controlsCreated = false;
-    this.unsub?.();
+    this.currentState = null;
+    this.lastMove = 0;
     this.soundPlayedForTackleImpactKey = null;
+    this.impactAudioPromise = null;
+    this.pendingRouteState = null;
     stopSfxChannel("commentary");
     stopSfxChannel("crowd");
     stopSfxChannel("misc");
+  }
+
+  private cleanupSceneInput() {
+    this.clearTouchDirections();
+    this.unsub?.();
+    this.unsub = undefined;
+    this.input?.off("pointerup", this.handleGlobalPointerUp, this);
+    this.input?.off("gameout", this.handleGameOut, this);
+  }
+
+  shutdown() {
+    this.handleSceneShutdown();
   }
 
   private playTackleCommentaryOnce(tackle: NonNullable<PublicState["tackle"]>) {
@@ -724,9 +768,14 @@ export class TackleScene extends Phaser.Scene {
     if (this.soundPlayedForTackleImpactKey === key) return;
     this.soundPlayedForTackleImpactKey = key;
 
-    // Hotfix 61 sequence: whistle and random crowd reaction together at
-    // impact, followed by the random tackle commentary after the whistle.
-    void playTackleImpactSequence();
+    // Whistle and crowd fire together, then the complete commentary phrase is
+    // allowed to finish before a queued PenaltyScene transition is released.
+    this.impactAudioPromise = playTackleImpactSequence().finally(() => {
+      this.impactAudioPromise = null;
+      const pending = this.pendingRouteState;
+      this.pendingRouteState = null;
+      if (pending && this.scene.isActive("TackleScene")) routeScene(this, pending);
+    });
   }
 
   private render(state: PublicState) {
@@ -831,7 +880,7 @@ export class TackleScene extends Phaser.Scene {
     }).setOrigin(0.5);
   }
 
-  private drawChaseAnimation(kx: number, ky: number, gx: number, gy: number, kicker: PlayerRecord | null, goalie: PlayerRecord | null, style: "slide" | "flyingKick" | "spinKick") {
+  private drawChaseAnimation(kx: number, ky: number, gx: number, gy: number, kicker: PlayerRecord | null, goalie: PlayerRecord | null, style: NonNullable<PublicState["tackle"]>["tackleStyle"]) {
     const dx = kx - gx;
     const dy = ky - gy;
     const dist = Math.hypot(dx, dy);
@@ -855,6 +904,21 @@ export class TackleScene extends Phaser.Scene {
         goalieSprite.setRotation(this.time.now / 150);
         goalieSprite.setScale(1.08, 0.92);
         this.drawSlideTrail(gx + 12, gy + 48, 0xe33b32, "SPIN KICK!");
+      } else if (style === "shoulderCharge") {
+        goalieSprite.setRotation(-0.28);
+        goalieSprite.setScale(1.22, 0.90);
+        goalieSprite.x += 22;
+        this.drawSlideTrail(gx + 10, gy + 42, 0xff6b35, "SHOULDER CHARGE!");
+      } else if (style === "cartwheel") {
+        goalieSprite.setRotation(this.time.now / 95);
+        goalieSprite.setScale(0.94, 1.12);
+        goalieSprite.y -= 18;
+        this.drawSlideTrail(gx + 6, gy + 34, 0x9c6cff, "CARTWHEEL!");
+      } else if (style === "scissorKick") {
+        goalieSprite.setRotation(-2.25);
+        goalieSprite.setScale(1.15, 0.82);
+        goalieSprite.y -= 34;
+        this.drawSlideTrail(gx + 12, gy + 24, 0x4de36f, "SCISSOR KICK!");
       } else {
         goalieSprite.setRotation(-0.72);
         goalieSprite.setScale(1.04, 0.92);
@@ -886,7 +950,15 @@ export class TackleScene extends Phaser.Scene {
     this.drawExplosion(kx + 18, ky + 38, elapsed);
     this.drawRollTrack(rollX, rollY, elapsed);
     const style = tackle.tackleStyle ?? "slide";
-    this.drawSlideTrail(gx, gy + 46, style === "flyingKick" ? 0x11b9e8 : style === "spinKick" ? 0xe33b32 : 0xffaa00, style === "flyingKick" ? "KAPOW!" : style === "spinKick" ? "WHIRL!" : "CRUNCH!");
+    const impactFx = {
+      slide: { color: 0xffaa00, label: "CRUNCH!" },
+      flyingKick: { color: 0x11b9e8, label: "KAPOW!" },
+      spinKick: { color: 0xe33b32, label: "WHIRL!" },
+      shoulderCharge: { color: 0xff6b35, label: "BOOF!" },
+      cartwheel: { color: 0x9c6cff, label: "WHEEEE!" },
+      scissorKick: { color: 0x4de36f, label: "SNIP!" }
+    }[style];
+    this.drawSlideTrail(gx, gy + 46, impactFx.color, impactFx.label);
     const goalieSprite = drawFootballer(this, gx + 18, gy + 24, goalie, 0.92, true);
     if (style === "flyingKick") {
       goalieSprite.setRotation(-1.55);
@@ -895,12 +967,24 @@ export class TackleScene extends Phaser.Scene {
     } else if (style === "spinKick") {
       goalieSprite.setRotation(elapsed / 130);
       goalieSprite.setScale(1.08, 0.90);
+    } else if (style === "shoulderCharge") {
+      goalieSprite.setRotation(-0.34);
+      goalieSprite.setScale(1.28, 0.88);
+      goalieSprite.x += 28;
+    } else if (style === "cartwheel") {
+      goalieSprite.setRotation(elapsed / 82);
+      goalieSprite.setScale(0.92, 1.14);
+      goalieSprite.y -= 26;
+    } else if (style === "scissorKick") {
+      goalieSprite.setRotation(-2.35 + Math.sin(elapsed / 120) * 0.18);
+      goalieSprite.setScale(1.20, 0.78);
+      goalieSprite.y -= 38;
     } else {
       goalieSprite.setRotation(-1.18);
       goalieSprite.setScale(1.08, 0.82);
     }
 
-    this.drawFloppingFootballer(rollX, rollY - bounce, kicker, rollAngle, phase, elapsed);
+    this.drawFloppingFootballer(rollX, rollY - bounce, kicker, rollAngle, phase, elapsed, tackle.flopStyle);
     this.drawLooseBall(rollX + 54 + Math.sin(elapsed / 170) * 18, rollY + 10 - bounce * 0.45, elapsed);
     this.drawPainStars(rollX, rollY - 82 - bounce * 0.35, elapsed);
 
@@ -950,28 +1034,74 @@ export class TackleScene extends Phaser.Scene {
     return selection;
   }
 
-  private drawFloppingFootballer(x: number, y: number, player: PlayerRecord | null, rollAngle: number, phase: number, elapsed: number) {
+  private drawFloppingFootballer(
+    x: number,
+    y: number,
+    player: PlayerRecord | null,
+    rollAngle: number,
+    phase: number,
+    elapsed: number,
+    flopStyle: NonNullable<PublicState["tackle"]>["flopStyle"]
+  ) {
     const container = drawFootballer(this, x, y, player, 0.82, false);
-    const flopVariant = Math.abs(Math.floor((x + y) / 37)) % 3;
-    if (flopVariant === 0) {
-      container.setRotation(rollAngle);
-      container.setScale(1.02 + Math.sin(elapsed / 150) * 0.10, 0.82 + Math.cos(elapsed / 180) * 0.12);
-    } else if (flopVariant === 1) {
-      container.setRotation(-rollAngle * 0.72);
-      container.setScale(0.88 + Math.sin(elapsed / 125) * 0.13, 1.04 + Math.cos(elapsed / 160) * 0.10);
-      container.y -= Math.abs(Math.sin(elapsed / 180)) * 22;
-    } else {
-      container.setRotation(Math.sin(elapsed / 180) * 1.25);
-      container.setScale(1.10, 0.76 + Math.abs(Math.cos(elapsed / 150)) * 0.20);
-      container.x += Math.sin(elapsed / 105) * 18;
+    switch (flopStyle) {
+      case "helicopter":
+        container.setRotation(elapsed / 72);
+        container.setScale(1.04, 0.86);
+        container.x += Math.sin(elapsed / 90) * 28;
+        container.y -= Math.abs(Math.sin(elapsed / 130)) * 20;
+        break;
+      case "starfish":
+        container.setRotation(Math.sin(elapsed / 145) * 0.34);
+        container.setScale(1.28, 0.66 + Math.abs(Math.cos(elapsed / 130)) * 0.18);
+        container.x += Math.sin(elapsed / 170) * 14;
+        break;
+      case "backflip":
+        container.setRotation(-rollAngle * 1.28);
+        container.setScale(0.90 + Math.abs(Math.sin(elapsed / 115)) * 0.18, 1.02);
+        container.y -= Math.abs(Math.sin(elapsed / 125)) * 42;
+        break;
+      case "ragdoll":
+        container.setRotation(Math.sin(elapsed / 92) * 1.55);
+        container.setScale(0.78 + Math.abs(Math.cos(elapsed / 105)) * 0.32, 1.08);
+        container.x += Math.sin(elapsed / 68) * 22;
+        container.y += Math.cos(elapsed / 96) * 12;
+        break;
+      case "somersault":
+        container.setRotation(rollAngle * 1.65);
+        container.setScale(0.92, 0.92);
+        container.y -= Math.abs(Math.sin(elapsed / 105)) * 34;
+        container.x += Math.sin(elapsed / 125) * 18;
+        break;
+      case "barrelRoll":
+      default:
+        container.setRotation(rollAngle);
+        container.setScale(1.02 + Math.sin(elapsed / 150) * 0.10, 0.82 + Math.cos(elapsed / 180) * 0.12);
+        break;
     }
 
-    // A clearer "rolling around" outline so the simple procedural player reads as tumbling.
     const g = this.add.graphics();
-    g.lineStyle(5, 0xffdf5c, 0.42);
+    const ringColor = {
+      barrelRoll: 0xffdf5c,
+      helicopter: 0x11b9e8,
+      starfish: 0xff6b35,
+      backflip: 0x9c6cff,
+      ragdoll: 0xe33b32,
+      somersault: 0x4de36f
+    }[flopStyle];
+    g.lineStyle(5, ringColor, 0.42);
     g.strokeEllipse(x, y + 10, 118 * (1 - phase * 0.25), 66 * (1 - phase * 0.10));
     g.lineStyle(3, 0xffffff, 0.35);
     g.strokeEllipse(x + Math.sin(elapsed / 220) * 12, y + 8, 84, 46);
+
+    this.add.text(x, y - 104, flopStyle.replace(/([A-Z])/g, " $1").toUpperCase(), {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      fontStyle: "900",
+      color: "#fff2a6",
+      stroke: "#000000",
+      strokeThickness: 4
+    }).setOrigin(0.5).setRotation(Math.sin(elapsed / 260) * 0.08);
   }
 
   private drawRollTrack(x: number, y: number, elapsed: number) {

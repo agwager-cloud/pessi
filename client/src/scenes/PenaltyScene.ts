@@ -1084,11 +1084,11 @@ export class PenaltyScene extends Phaser.Scene {
         : `${shortText(playerName(kicker), 18)} is lining up the shot.`;
 
     const x = 1120;
-    const y = 514;
+    const y = 508;
     const warning = seconds <= 2;
 
     if (!this.countdownBg) {
-      this.countdownBg = this.add.rectangle(x, y, 238, 104, 0x07170c, 0.92).setDepth(31);
+      this.countdownBg = this.add.rectangle(x, y, 252, 126, 0x07170c, 0.92).setDepth(31);
       this.countdownTitle = this.add.text(x, y - 32, "", {
         fontFamily: "Arial",
         fontSize: "16px",
@@ -1105,15 +1105,15 @@ export class PenaltyScene extends Phaser.Scene {
         stroke: "#000000",
         strokeThickness: 6
       }).setOrigin(0.5).setDepth(32);
-      this.countdownDetail = this.add.text(x, y + 34, "", {
+      this.countdownDetail = this.add.text(x, y + 28, "", {
         fontFamily: "Arial",
         fontSize: "11px",
         fontStyle: "bold",
         color: "#ffffff",
         align: "center",
-        wordWrap: { width: 214 }
+        wordWrap: { width: 226 }
       }).setOrigin(0.5).setDepth(32);
-      this.countdownLock = this.add.text(x, y + 54, "", {
+      this.countdownLock = this.add.text(x, y + 51, "", {
         fontFamily: "Arial",
         fontSize: "12px",
         fontStyle: "900",
