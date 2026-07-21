@@ -5,6 +5,9 @@ import { GameRoom, type ClientSocket } from "./GameRoom.js";
 
 const port = Number(process.env.PORT ?? 2567);
 const rooms = new Map<string, GameRoom>();
+const hostRequestRooms = new Map<string, string>();
+const emptyRoomCleanupTimers = new Map<string, NodeJS.Timeout>();
+const EMPTY_ROOM_GRACE_MS = 120_000;
 
 function makeCode(): string {
   let code = "";
@@ -22,8 +25,19 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    "Cache-Control": "no-store",
   });
   res.end(body);
+}
+
+function statusPayload() {
+  return {
+    ok: true,
+    ready: true,
+    game: "Pessi's Pens",
+    rooms: rooms.size,
+    websocketPath: "/ws",
+  };
 }
 
 function handleHttp(req: IncomingMessage, res: ServerResponse): void {
@@ -34,22 +48,8 @@ function handleHttp(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  if (url.pathname === "/") {
-    sendJson(res, 200, {
-      ok: true,
-      game: "Pessi's Pens",
-      websocketPath: "/ws",
-      health: "/health",
-    });
-    return;
-  }
-
-  if (url.pathname === "/health") {
-    sendJson(res, 200, {
-      ok: true,
-      game: "Pessi's Pens",
-      rooms: rooms.size,
-    });
+  if (url.pathname === "/" || url.pathname === "/api/status" || url.pathname === "/health") {
+    sendJson(res, 200, statusPayload());
     return;
   }
 
@@ -67,24 +67,59 @@ function handleHttp(req: IncomingMessage, res: ServerResponse): void {
   sendJson(res, 404, { error: "Not found" });
 }
 
+function removeHostRequestMappings(roomCode: string): void {
+  for (const [requestId, mappedCode] of hostRequestRooms) {
+    if (mappedCode === roomCode) hostRequestRooms.delete(requestId);
+  }
+}
+
+function cancelEmptyRoomCleanup(roomCode: string): void {
+  const timer = emptyRoomCleanupTimers.get(roomCode);
+  if (!timer) return;
+  clearTimeout(timer);
+  emptyRoomCleanupTimers.delete(roomCode);
+}
+
+function scheduleEmptyRoomCleanup(room: GameRoom): void {
+  cancelEmptyRoomCleanup(room.roomCode);
+  const timer = setTimeout(() => {
+    emptyRoomCleanupTimers.delete(room.roomCode);
+    if (!room.isEmpty()) return;
+    room.dispose();
+    rooms.delete(room.roomCode);
+    removeHostRequestMappings(room.roomCode);
+  }, EMPTY_ROOM_GRACE_MS);
+  emptyRoomCleanupTimers.set(room.roomCode, timer);
+}
+
+function getOrCreateHostRoom(requestId: string): GameRoom {
+  if (requestId) {
+    const existingCode = hostRequestRooms.get(requestId);
+    const existingRoom = existingCode ? rooms.get(existingCode) : undefined;
+    if (existingRoom) {
+      cancelEmptyRoomCleanup(existingRoom.roomCode);
+      return existingRoom;
+    }
+  }
+
+  const roomCode = makeCode();
+  const room = new GameRoom(roomCode);
+  rooms.set(roomCode, room);
+  if (requestId) hostRequestRooms.set(requestId, roomCode);
+  return room;
+}
+
 const server = createServer(handleHttp);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
 wss.on("connection", (ws: WebSocket, req) => {
   const url = new URL(req.url ?? "/ws", `http://${req.headers.host ?? "localhost"}`);
   const isHost = url.searchParams.get("host") === "1";
+  const requestId = url.searchParams.get("requestId")?.trim() ?? "";
   const requestedCode = url.searchParams.get("roomCode")?.trim() ?? "";
   const name = url.searchParams.get("name") ?? "Player";
 
-  let room: GameRoom | undefined;
-
-  if (isHost) {
-    const roomCode = makeCode();
-    room = new GameRoom(roomCode);
-    rooms.set(roomCode, room);
-  } else {
-    room = rooms.get(requestedCode);
-  }
+  const room = isHost ? getOrCreateHostRoom(requestId) : rooms.get(requestedCode);
 
   if (!room) {
     ws.send(JSON.stringify({ type: "error", data: "Room code not found" }));
@@ -92,6 +127,7 @@ wss.on("connection", (ws: WebSocket, req) => {
     return;
   }
 
+  cancelEmptyRoomCleanup(room.roomCode);
   const client: ClientSocket = { sessionId: randomUUID(), ws };
 
   ws.send(
@@ -106,23 +142,21 @@ wss.on("connection", (ws: WebSocket, req) => {
   ws.on("message", (buffer) => {
     try {
       const msg = JSON.parse(buffer.toString());
-      room?.receive(client, msg);
+      room.receive(client, msg);
     } catch {
       ws.send(JSON.stringify({ type: "error", data: "Invalid message" }));
     }
   });
 
   ws.on("close", () => {
-    room?.leave(client.sessionId);
-    if (room?.isEmpty()) {
-      room.dispose();
-      rooms.delete(room.roomCode);
-    }
+    room.leave(client.sessionId);
+    if (room.isEmpty()) scheduleEmptyRoomCleanup(room);
   });
 });
 
 server.listen(port, "0.0.0.0", () => {
   console.log(`Pessi's Pens server listening on 0.0.0.0:${port}`);
+  console.log(`Status endpoint: http://localhost:${port}/api/status`);
   console.log(`Health check: http://localhost:${port}/health`);
   console.log("WebSocket path: /ws");
   console.log("Local network clients should use http://<this-computer-ip>:5173 and ws://<this-computer-ip>:2567/ws");
