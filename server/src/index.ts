@@ -118,6 +118,10 @@ wss.on("connection", (ws: WebSocket, req) => {
   const requestId = url.searchParams.get("requestId")?.trim() ?? "";
   const requestedCode = url.searchParams.get("roomCode")?.trim() ?? "";
   const name = url.searchParams.get("name") ?? "Player";
+  const requestedPlayerToken = url.searchParams.get("playerToken")?.trim() ?? "";
+  const playerToken = /^[A-Za-z0-9_-]{12,160}$/.test(requestedPlayerToken)
+    ? requestedPlayerToken
+    : randomUUID();
 
   const room = isHost ? getOrCreateHostRoom(requestId) : rooms.get(requestedCode);
 
@@ -128,7 +132,10 @@ wss.on("connection", (ws: WebSocket, req) => {
   }
 
   cancelEmptyRoomCleanup(room.roomCode);
-  const client: ClientSocket = { sessionId: randomUUID(), ws };
+  // The browser supplies a stable, random player token. Reusing it across a
+  // short WebSocket retry lets the same teacher/student resume their exact player
+  // record instead of creating a duplicate or losing host control.
+  const client: ClientSocket = { sessionId: playerToken, ws };
 
   ws.send(
     JSON.stringify({
@@ -149,7 +156,7 @@ wss.on("connection", (ws: WebSocket, req) => {
   });
 
   ws.on("close", () => {
-    room.leave(client.sessionId);
+    room.leave(client.sessionId, ws);
     if (room.isEmpty()) scheduleEmptyRoomCleanup(room);
   });
 });

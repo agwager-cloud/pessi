@@ -127,30 +127,79 @@ export class GameRoom {
   private tick: NodeJS.Timeout;
   private runtimes = new Map<string, MatchRuntime>();
   private spectatorMatchByViewer = new Map<string, string>();
+  private disconnectedPlayerCleanup = new Map<string, NodeJS.Timeout>();
+  private hostReassignTimer: NodeJS.Timeout | null = null;
 
   constructor(roomCode: string) { this.roomCode = roomCode; this.tick = setInterval(() => this.update(), 100); }
   join(client: ClientSocket, options: JoinOptions) {
+    const previousClient = this.clients.get(client.sessionId);
+    if (previousClient && previousClient.ws !== client.ws && previousClient.ws.readyState < previousClient.ws.CLOSING) {
+      try { previousClient.ws.close(4000, "Reconnected from another tab or retry"); } catch { /* ignored */ }
+    }
+
     this.clients.set(client.sessionId, client);
+    this.cancelDisconnectedPlayerCleanup(client.sessionId);
+
     const existing = this.players.get(client.sessionId);
-    if (existing) { existing.connected = true; existing.sessionId = client.sessionId; }
-    else this.players.set(client.sessionId, { id: client.sessionId, sessionId: client.sessionId, name: cleanName(options.name), characterIndex: -1, isBot: false, connected: true, eliminated: false, wins: 0 });
+    if (existing) {
+      existing.connected = true;
+      existing.sessionId = client.sessionId;
+      const cleanedName = cleanName(options.name);
+      if (cleanedName) existing.name = cleanedName;
+    } else {
+      this.players.set(client.sessionId, { id: client.sessionId, sessionId: client.sessionId, name: cleanName(options.name), characterIndex: -1, isBot: false, connected: true, eliminated: false, wins: 0 });
+    }
+
     if (!this.hostId) this.hostId = client.sessionId;
-    // Character selection is now an explicit authoritative room phase. This
-    // keeps every client on the same route and avoids the client having to
-    // infer the scene from an unselected character alone.
-    if (this.phase === "lobby") this.phase = "characterSelect";
+    if (this.hostId === client.sessionId && this.hostReassignTimer) {
+      clearTimeout(this.hostReassignTimer);
+      this.hostReassignTimer = null;
+    }
+
+    // Only a genuinely unselected player should place the room into character
+    // selection. A reconnecting player who already chose a character must never
+    // rewind the whole classroom back to CharacterSelectScene.
+    const joinedPlayer = this.players.get(client.sessionId);
+    if ((this.phase === "lobby" || this.phase === "characterSelect") && joinedPlayer && joinedPlayer.characterIndex < 0) {
+      this.phase = "characterSelect";
+    }
+
     this.autoSizeToHumans();
-    this.message = `${this.nameOf(client.sessionId)} is choosing a footballer.`;
+    this.message = existing
+      ? `${this.nameOf(client.sessionId)} reconnected to the classroom.`
+      : `${this.nameOf(client.sessionId)} is choosing a footballer.`;
     this.broadcastState();
   }
-  leave(sessionId: string) {
+  leave(sessionId: string, socket?: WebSocket) {
+    const current = this.clients.get(sessionId);
+    // A stale socket from an earlier retry may close after the replacement socket
+    // is already live. Ignore that close so it cannot mark the active player as
+    // disconnected or transfer host control away from them.
+    if (socket && current && current.ws !== socket) return;
+
     this.spectatorMatchByViewer.delete(sessionId);
-    this.clients.delete(sessionId); const p=this.players.get(sessionId);
-    if (p) { p.connected=false; p.sessionId=null; if(this.phase==="lobby"||this.phase==="characterSelect") this.players.delete(sessionId); }
-    if(this.hostId===sessionId) this.hostId=[...this.players.values()].find(p=>!p.isBot&&p.connected)?.id??null;
-    this.autoSizeToHumans(); this.broadcastState();
+    this.clients.delete(sessionId);
+    const p = this.players.get(sessionId);
+    if (p) {
+      p.connected = false;
+      p.sessionId = null;
+      if (this.phase === "lobby" || this.phase === "characterSelect") {
+        this.scheduleDisconnectedPlayerCleanup(sessionId);
+      }
+    }
+
+    if (this.hostId === sessionId) this.scheduleHostReassignment(sessionId);
+    this.autoSizeToHumans();
+    this.broadcastState();
   }
-  dispose(){ clearInterval(this.tick); this.clearAllTimers(); }
+  dispose(){
+    clearInterval(this.tick);
+    this.clearAllTimers();
+    for (const timer of this.disconnectedPlayerCleanup.values()) clearTimeout(timer);
+    this.disconnectedPlayerCleanup.clear();
+    if (this.hostReassignTimer) clearTimeout(this.hostReassignTimer);
+    this.hostReassignTimer = null;
+  }
   isEmpty(){ return this.clients.size===0; }
   receive(client: ClientSocket, raw: unknown) {
     const msg=raw as {type?:string;data?:unknown}; const type=String(msg.type??""); const data=msg.data;
@@ -309,9 +358,78 @@ export class GameRoom {
   private shootoutWinner(m:BracketMatch):string|null{const a=m.p1ShootoutTaken,b=m.p2ShootoutTaken,ag=m.p1Shootout,bg=m.p2Shootout;if(a<=5&&b<=5){if(!canTeamStillCatch(a,ag,bg))return m.p2;if(!canTeamStillCatch(b,bg,ag))return m.p1;if(a===5&&b===5&&ag!==bg)return ag>bg?m.p1:m.p2;return null;}return a===b&&ag!==bg?(ag>bg?m.p1:m.p2):null;}
   private markFinished(m:BracketMatch,w:string,l:string){m.winnerId=w;m.loserId=l;m.status="done";const wp=this.players.get(w),lp=this.players.get(l);if(wp)wp.wins++;if(lp)lp.eliminated=true;}
   private finishMatch(r:MatchRuntime,m:BracketMatch,w:string,l:string){this.markFinished(m,w,l);r.message=`${this.nameOf(w)} advances! ${this.nameOf(l)} joins the spectator choir.`;r.phase="penaltyResult";r.activePenalty=null;r.tackle=null;r.timer=setTimeout(()=>{this.runtimes.delete(m.id);for(const [viewer,watched] of this.spectatorMatchByViewer)if(watched===m.id)this.spectatorMatchByViewer.delete(viewer);this.checkRoundComplete();this.broadcastState();},900);}
-  private checkRoundComplete(){if(this.runtimes.size>0)return;const pending=this.bracket.some(m=>m.round===this.roundNumber&&m.status!=="done");if(pending)return;this.phase=this.isTournamentDone()?"finalResults":"roundResults";this.message=this.phase==="finalResults"?"Tournament complete!":"Round complete. Host can start the next round.";}
-  private nextRoundFromResults(){if(this.phase!=="roundResults")return;const winners=this.bracket.filter(m=>m.round===this.roundNumber).map(m=>m.winnerId).filter((x):x is string=>!!x);if(winners.length<=1){this.phase="finalResults";return;}this.roundNumber++;for(let i=0;i<winners.length;i+=2)this.bracket.push(this.createMatch(this.roundNumber,i/2+1,winners[i],winners[i+1]));this.phase="tournament";this.message=`Round ${this.roundNumber} matchups are ready. Host can begin the round.`;}
-  private isTournamentDone(){const active=[...this.players.values()].filter(p=>!p.eliminated&&this.bracket.some(m=>m.p1===p.id||m.p2===p.id));return active.length===1&&this.bracket.some(m=>m.status==="done");}
+  private checkRoundComplete(){
+    if(this.runtimes.size>0)return;
+    const currentMatches=this.bracket.filter(m=>m.round===this.roundNumber);
+    if(currentMatches.length===0){
+      this.phase="tournament";
+      this.message=`Round ${this.roundNumber} could not be found. The host can try beginning the round again.`;
+      return;
+    }
+    if(currentMatches.some(m=>m.status!=="done"||!m.winnerId))return;
+
+    // A completed round containing one match is the final. This deterministic
+    // bracket check is safer than relying on eliminated flags, which can become
+    // temporarily stale when a player reconnects during a result transition.
+    this.phase=currentMatches.length===1?"finalResults":"roundResults";
+    this.message=this.phase==="finalResults"?"Tournament complete!":"Round complete. Host can start the next round.";
+  }
+  private nextRoundFromResults(){
+    if(this.phase!=="roundResults")return;
+
+    const currentMatches=this.bracket
+      .filter(m=>m.round===this.roundNumber)
+      .sort((a,b)=>a.matchNo-b.matchNo);
+
+    if(currentMatches.length===0){
+      this.message=`Round ${this.roundNumber} results are missing. Please try again.`;
+      return;
+    }
+    if(currentMatches.some(m=>m.status!=="done"||!m.winnerId)){
+      this.message="The round is still finishing on the server. Please press Start Next Round again in a moment.";
+      return;
+    }
+
+    const winners=currentMatches.map(m=>m.winnerId as string);
+    if(winners.length===1){
+      this.phase="finalResults";
+      this.message="Tournament complete!";
+      return;
+    }
+    if(winners.length%2!==0){
+      this.message="The next round could not be built because a winner is missing. Please try again.";
+      return;
+    }
+
+    const nextRound=this.roundNumber+1;
+    const existingNext=this.bracket.filter(m=>m.round===nextRound);
+    if(existingNext.length>0){
+      const expectedPairs=winners.length/2;
+      if(existingNext.length!==expectedPairs){
+        // Repair a partial transition rather than leaving the tournament frozen.
+        this.bracket=this.bracket.filter(m=>m.round!==nextRound);
+      }else{
+        this.roundNumber=nextRound;
+        this.matchIndex=0;
+        this.phase="tournament";
+        this.message=`Round ${this.roundNumber} matchups are ready. Host can begin the round.`;
+        return;
+      }
+    }
+
+    for(let i=0;i<winners.length;i+=2){
+      const p1=winners[i],p2=winners[i+1];
+      if(!p1||!p2){
+        this.message="The next round could not be built because a winner is missing. Please try again.";
+        return;
+      }
+      this.bracket.push(this.createMatch(nextRound,i/2+1,p1,p2));
+    }
+    this.roundNumber=nextRound;
+    this.matchIndex=0;
+    this.phase="tournament";
+    this.message=`Round ${this.roundNumber} matchups are ready. Host can begin the round.`;
+  }
   private playAgain(){
     if(this.phase!=="finalResults")return;
     this.clearAllTimers();
@@ -332,6 +450,41 @@ export class GameRoom {
     this.message="New random matchups are ready. Host can begin Round 1.";
   }
   private backToLobby(){this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();this.phase="lobby";this.bracket=[];this.roundNumber=0;for(const p of this.players.values())p.eliminated=false;this.autoSizeToHumans();this.message="Back in the lobby. Ankles reset.";}
+  private cancelDisconnectedPlayerCleanup(sessionId:string){
+    const timer=this.disconnectedPlayerCleanup.get(sessionId);
+    if(!timer)return;
+    clearTimeout(timer);
+    this.disconnectedPlayerCleanup.delete(sessionId);
+  }
+  private scheduleDisconnectedPlayerCleanup(sessionId:string){
+    this.cancelDisconnectedPlayerCleanup(sessionId);
+    const timer=setTimeout(()=>{
+      this.disconnectedPlayerCleanup.delete(sessionId);
+      const player=this.players.get(sessionId);
+      if(!player||player.connected)return;
+      if(this.phase!=="lobby"&&this.phase!=="characterSelect")return;
+      this.players.delete(sessionId);
+      if(this.hostId===sessionId)this.hostId=[...this.players.values()].find(p=>!p.isBot&&p.connected)?.id??null;
+      this.autoSizeToHumans();
+      this.broadcastState();
+    },45_000);
+    this.disconnectedPlayerCleanup.set(sessionId,timer);
+  }
+  private scheduleHostReassignment(disconnectedHostId:string){
+    if(this.hostReassignTimer)clearTimeout(this.hostReassignTimer);
+    this.hostReassignTimer=setTimeout(()=>{
+      this.hostReassignTimer=null;
+      if(this.hostId!==disconnectedHostId)return;
+      const oldHost=this.players.get(disconnectedHostId);
+      if(oldHost?.connected)return;
+      const replacement=[...this.players.values()].find(p=>!p.isBot&&p.connected);
+      if(replacement){
+        this.hostId=replacement.id;
+        this.message=`${replacement.name} is now the classroom host.`;
+        this.broadcastState();
+      }
+    },30_000);
+  }
   private clearRuntimeTimer(r:MatchRuntime){if(r.timer){clearTimeout(r.timer);r.timer=null;}}
   private clearAllTimers(){for(const r of this.runtimes.values())this.clearRuntimeTimer(r);}
   private nameOf(id:string){return this.players.get(id)?.name??"Mystery Player";}
