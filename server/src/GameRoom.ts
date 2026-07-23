@@ -106,11 +106,16 @@ type MatchRuntime = {
   matchId: string;
   phase: "tackle" | "penalty" | "penaltyResult";
   activePenalty: ActivePenalty | null;
+  penaltyReadyPlayers: Set<string>;
   tackle: TackleState | null;
   lastShot: ShotEvent | null;
   message: string;
   timer: NodeJS.Timeout | null;
 };
+
+const HUMAN_PENALTY_WINDOW_MS = 22_000;
+const PENALTY_READY_FALLBACK_MS = 3_500;
+const BOT_SHOT_DELAY_MS = 5_200;
 
 export class GameRoom {
   readonly roomCode: string;
@@ -212,7 +217,8 @@ export class GameRoom {
     else if(type==="startTournament") this.hostOnly(client,()=>this.startTournament());
     else if(type==="beginRound") this.hostOnly(client,()=>this.beginRound());
     else if(type==="move") this.handleMove(client,data);
-    else if(type==="goaliePick") this.handleGoaliePick(client,String(data) as GoalZone);
+    else if(type==="penaltyReady") this.handlePenaltyReady(client,data);
+    else if(type==="goaliePick") this.handleGoaliePick(client,data);
     else if(type==="shoot") this.handleShoot(client,data);
     else if(type==="watchMatch") this.watchMatch(client,String(data??""));
     else if(type==="stopWatching") this.stopWatching(client);
@@ -244,7 +250,7 @@ export class GameRoom {
     const viewerPlayer = viewerId ? this.players.get(viewerId) : null;
     const viewerPhase = r ? r.phase : (viewerPlayer && !viewerPlayer.isBot && viewerPlayer.characterIndex < 0 ? "characterSelect" : this.phase);
     const liveCount=this.runtimes.size;
-    return { roomCode:this.roomCode,hostId:this.hostId,phase:viewerPhase,tournamentSize:this.tournamentSize,players:[...this.players.values()].sort((a,b)=>a.name.localeCompare(b.name)),bracket:this.bracket,activeMatchId:r?.matchId??null,isSpectating:view.isSpectating,liveMatchIds:[...this.runtimes.keys()],activePenalty:visiblePenalty,tackle:r?.tackle??null,lastShot:r?.lastShot??null,roundNumber:this.roundNumber,matchIndex:r?this.matchById(r.matchId)?.matchNo??0:this.matchIndex,message:r?.message??(this.phase==="roundLive"?`Round ${this.roundNumber} is live • ${liveCount} human match${liveCount===1?"":"es"} still playing.`:this.message)};
+    return { roomCode:this.roomCode,hostId:this.hostId,phase:viewerPhase,tournamentSize:this.tournamentSize,players:[...this.players.values()].sort((a,b)=>a.name.localeCompare(b.name)),bracket:this.bracket,activeMatchId:r?.matchId??null,isSpectating:view.isSpectating,liveMatchIds:[...this.runtimes.keys()],activePenalty:visiblePenalty,tackle:r?.tackle??null,lastShot:r?.lastShot??null,roundNumber:this.roundNumber,matchIndex:r?this.matchById(r.matchId)?.matchNo??0:this.matchIndex,message:r?.message??(this.phase==="roundLive"?`Round ${this.roundNumber} is live • ${liveCount} human match${liveCount===1?"":"es"} still playing.`:this.message),serverNow:Date.now()};
   }
   private broadcastState(){ for(const c of this.clients.values()) if(c.ws.readyState===c.ws.OPEN)c.ws.send(JSON.stringify({type:"state",data:this.publicState(c.sessionId)})); }
   private selectCharacter(c: ClientSocket, requested: number) {
@@ -298,13 +304,59 @@ export class GameRoom {
   private removePlayer(id:string){const p=this.players.get(id);if(!p||(this.phase!=="lobby"&&this.phase!=="characterSelect")||id===this.hostId)return;this.players.delete(id);this.autoSizeToHumans();}
   private createMatch(round:number,matchNo:number,p1:string,p2:string):BracketMatch{return{id:`r${round}m${matchNo}_${Date.now()}_${Math.floor(Math.random()*9999)}`,round,matchNo,p1,p2,p1Score:0,p2Score:0,p1Shootout:0,p2Shootout:0,p1ShootoutTaken:0,p2ShootoutTaken:0,winnerId:null,loserId:null,events:[],status:"pending"};}
   private startTournament(){if(this.phase!=="lobby")return;if([...this.players.values()].some(p=>!p.isBot&&p.connected&&p.characterIndex<0)){this.message="Waiting for every human player to choose a character.";return;}this.fillBots();const entrants=[...this.players.values()].slice(0,this.tournamentSize);if(entrants.length<2){this.message="Need at least 2 players.";return;}for(const p of this.players.values()){p.eliminated=!entrants.some(e=>e.id===p.id);p.wins=0;}this.bracket=[];this.roundNumber=1;const ids=shuffle(entrants.map(p=>p.id));for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));this.phase="tournament";this.message="First round matchups are ready. Host can begin Round 1.";}
-  private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
+  private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,penaltyReadyPlayers:new Set<string>(),tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
   private matchById(id:string){return this.bracket.find(m=>m.id===id)??null;}
   private autoResolveBotMatch(m:BracketMatch){m.status="playing";m.p1Score=Math.random()<.72?1:0;m.p2Score=Math.random()<.72?1:0;if(m.p1Score===m.p2Score){for(let i=0;i<5;i++){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}while(m.p1Shootout===m.p2Shootout){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}}const w=m.p1Score*10+m.p1Shootout>=m.p2Score*10+m.p2Shootout?m.p1:m.p2;this.markFinished(m,w,w===m.p1?m.p2:m.p1);}
-  private startTackle(r:MatchRuntime,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now();r.phase="tackle";r.activePenalty=null;r.lastShot=null;r.tackle={kickerId,goalieId,kickerX:300,kickerY:360,goalieX:1080,goalieY:360,tackleText:randomFrom(TACKLE_LINES),tackleStyle:randomFrom(["slide","flyingKick","spinKick","shoulderCharge","cartwheel","scissorKick"] as const),flopStyle:randomFrom(["barrelRoll","helicopter","starfish","backflip","ragdoll","somersault"] as const),startedAt:now,timeoutAt:now+5000,impactAt:null};r.message=`${this.nameOf(goalieId)} is approaching for a ${r.tackle.tackleText}!`;}
-  private startPenalty(r:MatchRuntime,mode:ShotMode,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);const now=Date.now(),bot=!!this.players.get(kickerId)?.isBot,delay=5200;r.phase="penalty";r.tackle=null;r.lastShot=null;r.activePenalty={mode,kickerId,goalieId,shotLabel:this.shotLabel(r,mode,kickerId),goaliePick:this.players.get(goalieId)?.isBot?randomFrom(GOAL_ZONES):null,startedAt:now,timeoutAt:now+(bot?delay:22000)};r.message=bot?`${this.nameOf(kickerId)} is winding up. Bot shot in 5 seconds!`:`${this.nameOf(kickerId)} steps up against ${this.nameOf(goalieId)}.`;if(bot)r.timer=setTimeout(()=>{if(r.activePenalty?.kickerId===kickerId)this.resolveShot(r,{aimX:Math.random(),aimY:Math.random(),power:45+Math.random()*48});},delay);}
+  private startTackle(r:MatchRuntime,kickerId:string,goalieId:string){this.clearRuntimeTimer(r);r.penaltyReadyPlayers.clear();const now=Date.now();r.phase="tackle";r.activePenalty=null;r.lastShot=null;r.tackle={kickerId,goalieId,kickerX:300,kickerY:360,goalieX:1080,goalieY:360,tackleText:randomFrom(TACKLE_LINES),tackleStyle:randomFrom(["slide","flyingKick","spinKick","shoulderCharge","cartwheel","scissorKick"] as const),flopStyle:randomFrom(["barrelRoll","helicopter","starfish","backflip","ragdoll","somersault"] as const),startedAt:now,timeoutAt:now+5000,impactAt:null};r.message=`${this.nameOf(goalieId)} is approaching for a ${r.tackle.tackleText}!`;}
+  private startPenalty(r:MatchRuntime,mode:ShotMode,kickerId:string,goalieId:string){
+    this.clearRuntimeTimer(r);
+    r.penaltyReadyPlayers.clear();
+    const kickerBot=!!this.players.get(kickerId)?.isBot;
+    const goalieBot=!!this.players.get(goalieId)?.isBot;
+    const needsHumanReady=!kickerBot||!goalieBot;
+    const penaltyId=`${r.matchId}:${mode}:${kickerId}:${goalieId}:${Date.now()}:${Math.floor(Math.random()*1_000_000)}`;
+    r.phase="penalty";
+    r.tackle=null;
+    r.lastShot=null;
+    r.activePenalty={
+      id:penaltyId,
+      mode,
+      kickerId,
+      goalieId,
+      shotLabel:this.shotLabel(r,mode,kickerId),
+      goaliePick:this.players.get(goalieId)?.isBot?randomFrom(GOAL_ZONES):null,
+      awaitingReady:needsHumanReady,
+      startedAt:0,
+      timeoutAt:0
+    };
+    if(!needsHumanReady){
+      this.activatePenaltyClock(r,penaltyId);
+    }else{
+      r.message=`Loading ${this.nameOf(kickerId)} and ${this.nameOf(goalieId)} into the penalty scene...`;
+      r.timer=setTimeout(()=>this.activatePenaltyClock(r,penaltyId),PENALTY_READY_FALLBACK_MS);
+    }
+  }
+  private activatePenaltyClock(r:MatchRuntime,penaltyId:string){
+    const p=r.activePenalty;
+    if(!p||r.phase!=="penalty"||p.id!==penaltyId||!p.awaitingReady&&p.startedAt>0)return;
+    this.clearRuntimeTimer(r);
+    const now=Date.now();
+    const bot=!!this.players.get(p.kickerId)?.isBot;
+    p.awaitingReady=false;
+    p.startedAt=now;
+    p.timeoutAt=now+(bot?BOT_SHOT_DELAY_MS:HUMAN_PENALTY_WINDOW_MS);
+    r.message=bot?`${this.nameOf(p.kickerId)} is winding up. Bot shot in 5 seconds!`:`${this.nameOf(p.kickerId)} steps up against ${this.nameOf(p.goalieId)}. The full shot clock is running.`;
+    if(bot){
+      r.timer=setTimeout(()=>{
+        if(r.phase==="penalty"&&r.activePenalty?.id===penaltyId){
+          this.resolveShot(r,{penaltyId,aimX:Math.random(),aimY:Math.random(),power:45+Math.random()*48});
+        }
+      },BOT_SHOT_DELAY_MS);
+    }
+    this.broadcastState();
+  }
   private shotLabel(r:MatchRuntime,mode:ShotMode,kickerId:string){const m=this.matchById(r.matchId);if(!m)return"Penalty";if(mode==="regular")return`${this.nameOf(kickerId)} regular penalty`;const n=kickerId===m.p1?m.p1ShootoutTaken+1:m.p2ShootoutTaken+1;return n<=5?`Shootout kick ${n} of 5`:`Sudden death kick ${n-5}`;}
-  private update(){for(const r of this.runtimes.values()){if(r.phase==="tackle"&&r.tackle)this.updateTackle(r);if(r.phase==="penalty"&&r.activePenalty&&Date.now()>r.activePenalty.timeoutAt){if(!r.activePenalty.goaliePick)r.activePenalty.goaliePick="LM";this.resolveShot(r,{aimX:Math.random(),aimY:Math.random(),power:35+Math.random()*45});}}if(this.phase!=="lobby")this.broadcastState();}
+  private update(){for(const r of this.runtimes.values()){if(r.phase==="tackle"&&r.tackle)this.updateTackle(r);if(r.phase==="penalty"&&r.activePenalty&&!r.activePenalty.awaitingReady&&r.activePenalty.timeoutAt>0&&Date.now()>r.activePenalty.timeoutAt){if(!r.activePenalty.goaliePick)r.activePenalty.goaliePick="LM";this.resolveShot(r,{penaltyId:r.activePenalty.id,aimX:Math.random(),aimY:Math.random(),power:35+Math.random()*45});}}if(this.phase!=="lobby")this.broadcastState();}
   private updateTackle(r:MatchRuntime){
     const t=r.tackle;if(!t)return;const now=Date.now();
     if(t.impactAt){if(now>t.timeoutAt)this.startPenalty(r,"regular",t.kickerId,t.goalieId);return;}
@@ -350,9 +402,55 @@ export class GameRoom {
       t.goalieY=clamp(t.goalieY+dy*speed,170,580);
     }
   }
-  private handleGoaliePick(c:ClientSocket,z:GoalZone){const r=this.runtimeForPlayer(c.sessionId);if(!r||r.phase!=="penalty"||!r.activePenalty||c.sessionId!==r.activePenalty.goalieId||!GOAL_ZONES.includes(z))return;r.activePenalty.goaliePick=z;r.message=`${this.nameOf(c.sessionId)} has chosen a dive.`;}
-  private handleShoot(c:ClientSocket,data:unknown){const r=this.runtimeForPlayer(c.sessionId);if(!r||r.phase!=="penalty"||!r.activePenalty||c.sessionId!==r.activePenalty.kickerId)return;this.resolveShot(r,data);}
-  private resolveShot(r:MatchRuntime,data:unknown){const p=r.activePenalty,m=this.matchById(r.matchId);if(!p||!m||r.phase!=="penalty")return;this.clearRuntimeTimer(r);const d=data as {aimX?:number;aimY?:number;power?:number},aimX=clamp(Number(d.aimX??.5),0,1),aimY=clamp(Number(d.aimY??.5),0,1),power=clamp(Number(d.power??60),0,100),zone=zoneFromAim(aimX,aimY),gp=p.goaliePick??"LM";const sweet=power>=25&&power<=75,soft=power<25,chaos=power>75,miss=Math.random()<((sweet?.03:0)+(soft?(power<12?.82:power<18?.62:.42):0)+(chaos?Math.min(.62,.18+((power-75)/25)*.44):0)+(aimX<.08||aimX>.92||aimY<.08?.11:0));const saved=!miss&&gp===zone,goal=!miss&&!saved,missLines=soft?SHOT_LINES.softMiss:chaos?SHOT_LINES.chaosMiss:SHOT_LINES.miss;const e:ShotEvent={matchId:m.id,mode:p.mode,kickerId:p.kickerId,goalieId:p.goalieId,goal,miss,saved,zone,goaliePick:gp,aimX,aimY,power:Math.round(power),text:randomFrom(goal?SHOT_LINES.goal:miss?missLines:SHOT_LINES.save)};this.applyShot(m,e);r.lastShot=e;r.activePenalty=null;r.phase="penaltyResult";r.message=e.text;r.timer=setTimeout(()=>this.afterShot(r,m),3300);}
+  private handlePenaltyReady(c:ClientSocket,data:unknown){
+    const r=this.runtimeForPlayer(c.sessionId);
+    const p=r?.activePenalty;
+    if(!r||r.phase!=="penalty"||!p||!p.awaitingReady)return;
+    const d=data as {penaltyId?:string};
+    if(d.penaltyId&&d.penaltyId!==p.id)return;
+    if(c.sessionId!==p.kickerId&&c.sessionId!==p.goalieId)return;
+    r.penaltyReadyPlayers.add(c.sessionId);
+    const kickerReady=this.players.get(p.kickerId)?.isBot||r.penaltyReadyPlayers.has(p.kickerId);
+    const goalieReady=this.players.get(p.goalieId)?.isBot||r.penaltyReadyPlayers.has(p.goalieId);
+    if(kickerReady&&goalieReady)this.activatePenaltyClock(r,p.id);
+  }
+  private handleGoaliePick(c:ClientSocket,data:unknown){
+    const r=this.runtimeForPlayer(c.sessionId);
+    const p=r?.activePenalty;
+    if(!r||r.phase!=="penalty"||!p||p.awaitingReady||c.sessionId!==p.goalieId)return;
+    const d=typeof data==="string"?{zone:data}:{...(data as {zone?:unknown;penaltyId?:unknown})};
+    const z=String(d.zone??"") as GoalZone;
+    if(d.penaltyId&&String(d.penaltyId)!==p.id)return;
+    if(!GOAL_ZONES.includes(z))return;
+    p.goaliePick=z;
+    r.message=`${this.nameOf(c.sessionId)} has chosen a dive.`;
+  }
+  private handleShoot(c:ClientSocket,data:unknown){
+    const r=this.runtimeForPlayer(c.sessionId);
+    const p=r?.activePenalty;
+    if(!r||r.phase!=="penalty"||!p||p.awaitingReady||c.sessionId!==p.kickerId)return;
+    const d=data as {penaltyId?:unknown};
+    if(d?.penaltyId&&String(d.penaltyId)!==p.id)return;
+    this.resolveShot(r,data);
+  }
+  private resolveShot(r:MatchRuntime,data:unknown){
+    const p=r.activePenalty,m=this.matchById(r.matchId);
+    if(!p||!m||r.phase!=="penalty"||p.awaitingReady)return;
+    const d=data as {penaltyId?:unknown;aimX?:number;aimY?:number;power?:number};
+    if(d.penaltyId&&String(d.penaltyId)!==p.id)return;
+    this.clearRuntimeTimer(r);
+    const aimX=clamp(Number(d.aimX??.5),0,1),aimY=clamp(Number(d.aimY??.5),0,1),power=clamp(Number(d.power??60),0,100),zone=zoneFromAim(aimX,aimY),gp=p.goaliePick??"LM";
+    const sweet=power>=25&&power<=75,soft=power<25,chaos=power>75,miss=Math.random()<((sweet?.03:0)+(soft?(power<12?.82:power<18?.62:.42):0)+(chaos?Math.min(.62,.18+((power-75)/25)*.44):0)+(aimX<.08||aimX>.92||aimY<.08?.11:0));
+    const saved=!miss&&gp===zone,goal=!miss&&!saved,missLines=soft?SHOT_LINES.softMiss:chaos?SHOT_LINES.chaosMiss:SHOT_LINES.miss;
+    const e:ShotEvent={matchId:m.id,mode:p.mode,kickerId:p.kickerId,goalieId:p.goalieId,goal,miss,saved,zone,goaliePick:gp,aimX,aimY,power:Math.round(power),text:randomFrom(goal?SHOT_LINES.goal:miss?missLines:SHOT_LINES.save)};
+    this.applyShot(m,e);
+    r.penaltyReadyPlayers.clear();
+    r.lastShot=e;
+    r.activePenalty=null;
+    r.phase="penaltyResult";
+    r.message=e.text;
+    r.timer=setTimeout(()=>this.afterShot(r,m),3300);
+  }
   private applyShot(m:BracketMatch,e:ShotEvent){m.events.push(e);const p1=e.kickerId===m.p1;if(e.mode==="regular"){if(e.goal)p1?m.p1Score++:m.p2Score++;}else if(p1){m.p1ShootoutTaken++;if(e.goal)m.p1Shootout++;}else{m.p2ShootoutTaken++;if(e.goal)m.p2Shootout++;}}
   private afterShot(r:MatchRuntime,m:BracketMatch){const regular=m.events.filter(e=>e.mode==="regular").length;if(regular===1){this.startTackle(r,m.p2,m.p1);return;}if(regular===2&&m.p1Score!==m.p2Score){const w=m.p1Score>m.p2Score?m.p1:m.p2;this.finishMatch(r,m,w,w===m.p1?m.p2:m.p1);return;}const w=this.shootoutWinner(m);if(w){this.finishMatch(r,m,w,w===m.p1?m.p2:m.p1);return;}const k=m.p1ShootoutTaken===m.p2ShootoutTaken?m.p1:m.p2;this.startPenalty(r,"shootout",k,k===m.p1?m.p2:m.p1);}
   private shootoutWinner(m:BracketMatch):string|null{const a=m.p1ShootoutTaken,b=m.p2ShootoutTaken,ag=m.p1Shootout,bg=m.p2Shootout;if(a<=5&&b<=5){if(!canTeamStillCatch(a,ag,bg))return m.p2;if(!canTeamStillCatch(b,bg,ag))return m.p1;if(a===5&&b===5&&ag!==bg)return ag>bg?m.p1:m.p2;return null;}return a===b&&ag!==bg?(ag>bg?m.p1:m.p2):null;}

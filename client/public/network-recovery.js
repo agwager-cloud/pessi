@@ -7,6 +7,31 @@
   const NativeWebSocket = window.WebSocket;
   if (typeof NativeWebSocket !== "function") return;
 
+  const nativeDateNow = Date.now.bind(Date);
+  let serverClockOffsetMs = 0;
+  let hasServerClock = false;
+
+  // Pessi's timed scenes compare server timestamps against Date.now(). School
+  // devices can be several seconds apart, so keep every browser on the same
+  // server clock without changing Phaser's animation clock (performance.now()).
+  try {
+    Date.now = () => nativeDateNow() + serverClockOffsetMs;
+  } catch {
+    // Extremely locked-down browsers can make Date.now read-only. The game still
+    // works; it simply falls back to the device clock on that browser.
+  }
+
+  function syncServerClock(serverNow) {
+    if (!Number.isFinite(Number(serverNow))) return;
+    const sample = Number(serverNow) - nativeDateNow();
+    if (!hasServerClock) {
+      serverClockOffsetMs = sample;
+      hasServerClock = true;
+      return;
+    }
+    serverClockOffsetMs = serverClockOffsetMs * 0.7 + sample * 0.3;
+  }
+
   const MAX_RECOVERY_MS = 45_000;
   const MAX_QUEUE = 80;
   const TOKEN_KEY = "pessiStablePlayerToken";
@@ -21,7 +46,7 @@
 
     const token = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+      : `${nativeDateNow()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 
     try {
       window.sessionStorage.setItem(TOKEN_KEY, token);
@@ -73,6 +98,10 @@
       this._recoveryAttempt = 0;
       this._retryTimer = 0;
       this._queue = [];
+      this._sessionId = "";
+      this._lastReadyPenaltyId = "";
+      this._lastReadySentAt = 0;
+      this._currentPenaltyId = "";
 
       this._connect();
     }
@@ -88,17 +117,33 @@
 
     send(data) {
       if (this._manualClose) throw new DOMException("WebSocket is already closed", "InvalidStateError");
+      const protectedData = this._attachPenaltyId(data);
       const socket = this._native;
       if (socket && socket.readyState === NativeWebSocket.OPEN) {
-        socket.send(data);
+        socket.send(protectedData);
         return;
       }
       if (this._everOpened && this._recovering) {
         if (this._queue.length >= MAX_QUEUE) this._queue.shift();
-        this._queue.push(data);
+        this._queue.push(protectedData);
         return;
       }
       throw new DOMException("WebSocket is not open", "InvalidStateError");
+    }
+
+    _attachPenaltyId(raw) {
+      if (!this._currentPenaltyId || typeof raw !== "string") return raw;
+      let message;
+      try { message = JSON.parse(raw); } catch { return raw; }
+      if (!message || (message.type !== "shoot" && message.type !== "goaliePick")) return raw;
+
+      if (message.type === "goaliePick" && typeof message.data === "string") {
+        message.data = { zone: message.data, penaltyId: this._currentPenaltyId };
+      } else {
+        const original = message.data && typeof message.data === "object" ? message.data : {};
+        message.data = { ...original, penaltyId: original.penaltyId || this._currentPenaltyId };
+      }
+      return JSON.stringify(message);
     }
 
     close(code, reason) {
@@ -175,6 +220,7 @@
 
       socket.onmessage = (event) => {
         if (this._manualClose || this._native !== socket) return;
+        this._observeGameMessage(event.data, socket);
         this._dispatch("message", event);
       };
 
@@ -205,7 +251,7 @@
       if (this._manualClose) return;
       if (!this._recovering) {
         this._recovering = true;
-        this._recoveryStartedAt = Date.now();
+        this._recoveryStartedAt = nativeDateNow();
         this._recoveryAttempt = 0;
         console.warn("[Pessi network] Classroom connection interrupted. Reconnecting automatically...");
       }
@@ -214,7 +260,7 @@
 
     _scheduleRetry() {
       if (this._manualClose || this._retryTimer) return;
-      const elapsed = Date.now() - this._recoveryStartedAt;
+      const elapsed = nativeDateNow() - this._recoveryStartedAt;
       if (elapsed >= MAX_RECOVERY_MS) {
         this._recovering = false;
         this._queue.length = 0;
@@ -250,6 +296,43 @@
       const queued = this._queue.splice(0);
       for (const data of queued) {
         try { socket.send(data); } catch { this._queue.unshift(data); break; }
+      }
+    }
+
+    _observeGameMessage(raw, socket) {
+      let message;
+      try {
+        message = JSON.parse(String(raw));
+      } catch {
+        return;
+      }
+
+      if (message?.type === "welcome") {
+        this._sessionId = String(message.data?.sessionId ?? "");
+        return;
+      }
+
+      if (message?.type !== "state") return;
+      const state = message.data;
+      syncServerClock(state?.serverNow);
+
+      const penalty = state?.activePenalty;
+      this._currentPenaltyId = penalty?.id ? String(penalty.id) : "";
+      if (!penalty?.awaitingReady || !penalty?.id || !this._sessionId) return;
+      if (penalty.kickerId !== this._sessionId && penalty.goalieId !== this._sessionId) return;
+
+      const now = nativeDateNow();
+      if (this._lastReadyPenaltyId === penalty.id && now - this._lastReadySentAt < 700) return;
+      this._lastReadyPenaltyId = penalty.id;
+      this._lastReadySentAt = now;
+
+      if (socket.readyState === NativeWebSocket.OPEN) {
+        try {
+          socket.send(JSON.stringify({ type: "penaltyReady", data: { penaltyId: penalty.id } }));
+        } catch {
+          // The normal retry wrapper will send another ready signal on the next
+          // state update if the socket closes at this exact moment.
+        }
       }
     }
   }

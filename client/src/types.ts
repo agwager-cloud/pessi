@@ -49,11 +49,13 @@ export type ShotEvent = {
 };
 
 export type ActivePenalty = {
+  id: string;
   mode: ShotMode;
   kickerId: string;
   goalieId: string;
   shotLabel: string;
   goaliePick: GoalZone | null;
+  awaitingReady: boolean;
   startedAt: number;
   timeoutAt: number;
 };
@@ -89,4 +91,5 @@ export type PublicState = {
   roundNumber: number;
   matchIndex: number;
   message: string;
+  serverNow: number;
 };
