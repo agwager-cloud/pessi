@@ -798,7 +798,7 @@ export class TackleScene extends Phaser.Scene {
     const isKicker = Net.sessionId === t.kickerId;
     const isGoalie = Net.sessionId === t.goalieId;
     const impactAt = t.impactAt ?? null;
-    const impactElapsed = impactAt ? Net.serverNow() - impactAt : 0;
+    const impactElapsed = impactAt ? Date.now() - impactAt : 0;
 
     this.drawSceneHeader(state, activeMatch?.p1Score ?? 0, activeMatch?.p2Score ?? 0);
 
@@ -810,7 +810,7 @@ export class TackleScene extends Phaser.Scene {
       drawArcadeBall(this, t.kickerX + 38, t.kickerY + 35, 14, 18).setRotation(this.time.now / 260);
     }
 
-    const remaining = Math.max(0, Math.ceil((t.timeoutAt - Net.serverNow()) / 1000));
+    const remaining = Math.max(0, Math.ceil((t.timeoutAt - Date.now()) / 1000));
     const instruction = impactAt
       ? "Penalty incoming after the theatrical rolling stops..."
       : isKicker

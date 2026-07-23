@@ -77,8 +77,6 @@ class NetService {
   state: PublicState | null = null;
   sessionId = "";
   private handlers = new Set<StateHandler>();
-  private serverClockOffsetMs = 0;
-  private hasServerClock = false;
 
   onState(handler: StateHandler): () => void {
     this.handlers.add(handler);
@@ -106,10 +104,6 @@ class NetService {
     }
   }
 
-  serverNow(): number {
-    return Date.now() + this.serverClockOffsetMs;
-  }
-
   send(type: string, data?: unknown) {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify({ type, data }));
@@ -122,8 +116,6 @@ class NetService {
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
     this.state = null;
     this.sessionId = "";
-    this.serverClockOffsetMs = 0;
-    this.hasServerClock = false;
   }
 
   private async connectWithRetries(
@@ -289,20 +281,8 @@ class NetService {
   }
 
   private emit(state: PublicState) {
-    this.syncServerClock(state.serverNow);
     this.state = state;
     for (const handler of this.handlers) handler(state);
-  }
-
-  private syncServerClock(serverNow?: number) {
-    if (!Number.isFinite(serverNow)) return;
-    const sample = Number(serverNow) - Date.now();
-    if (!this.hasServerClock) {
-      this.serverClockOffsetMs = sample;
-      this.hasServerClock = true;
-      return;
-    }
-    this.serverClockOffsetMs = this.serverClockOffsetMs * 0.7 + sample * 0.3;
   }
 }
 

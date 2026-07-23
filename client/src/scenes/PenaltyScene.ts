@@ -36,8 +36,7 @@ function shortText(text: string, max = 22): string {
 }
 
 function secondsRemaining(until: number): number {
-  if (!Number.isFinite(until) || until <= 0) return 0;
-  return Math.max(0, Math.ceil((until - Net.serverNow()) / 1000));
+  return Math.max(0, Math.ceil((until - Date.now()) / 1000));
 }
 
 function playerName(player: PlayerRecord | null): string {
@@ -109,8 +108,6 @@ export class PenaltyScene extends Phaser.Scene {
   private completedResultFrameKey: string | null = null;
   private soundPlayedForShotKey: string | null = null;
   private lastAimPenaltyKey: string | null = null;
-  private readyPenaltyId: string | null = null;
-  private lastReadySentAt = 0;
 
   private aimOuter?: Phaser.GameObjects.Arc;
   private aimInner?: Phaser.GameObjects.Arc;
@@ -156,7 +153,6 @@ export class PenaltyScene extends Phaser.Scene {
       routeScene(this, state);
       if (this.scene.isActive("PenaltyScene")) {
         this.state = state;
-        this.maybeSendPenaltyReady(state);
         const key = this.renderKey(state);
         if (key !== this.lastRenderKey) {
           this.lastRenderKey = key;
@@ -177,13 +173,7 @@ export class PenaltyScene extends Phaser.Scene {
       return;
     }
     if (this.state?.phase !== "penalty") return;
-    this.maybeSendPenaltyReady(this.state);
-    const activePenalty = this.state.activePenalty;
-    if (!activePenalty || activePenalty.awaitingReady) {
-      this.drawCountdownOnly(this.state);
-      return;
-    }
-    if (activePenalty.kickerId === Net.sessionId && !this.isKickPending(this.state)) {
+    if (this.state.activePenalty?.kickerId === Net.sessionId && !this.isKickPending(this.state)) {
       this.power += this.powerDir * delta * 0.22;
       if (this.power >= 100) { this.power = 100; this.powerDir = -1; }
       if (this.power <= 0) { this.power = 0; this.powerDir = 1; }
@@ -206,8 +196,6 @@ export class PenaltyScene extends Phaser.Scene {
     this.resultObjectsKey = null;
     this.soundPlayedForShotKey = null;
     this.lastAimPenaltyKey = null;
-    this.readyPenaltyId = null;
-    this.lastReadySentAt = 0;
     stopSfxChannel("commentary");
     stopSfxChannel("crowd");
   }
@@ -218,7 +206,7 @@ export class PenaltyScene extends Phaser.Scene {
     const match = state.bracket.find((m) => m.id === state.activeMatchId);
     const scoreKey = match ? `${match.id}:${match.p1Score}:${match.p2Score}:${match.p1Shootout}:${match.p2Shootout}:${match.p1ShootoutTaken}:${match.p2ShootoutTaken}:${match.status}:${match.winnerId ?? ""}` : "no-match";
     if (state.phase === "penalty" && p) {
-      return [state.phase, p.id, p.awaitingReady, p.startedAt, p.timeoutAt, p.kickerId, p.goalieId, p.mode, p.goaliePick ?? "", p.shotLabel, scoreKey].join("|");
+      return [state.phase, p.startedAt, p.kickerId, p.goalieId, p.mode, p.goaliePick ?? "", p.shotLabel, scoreKey].join("|");
     }
     if (state.phase === "penaltyResult" && e) {
       return [state.phase, e.matchId, e.kickerId, e.goalieId, e.zone, e.goaliePick, e.goal, e.miss, e.saved, e.power, e.aimX, e.aimY, e.text, scoreKey].join("|");
@@ -256,7 +244,7 @@ export class PenaltyScene extends Phaser.Scene {
   private penaltyKey(state: PublicState): string | null {
     const p = state.activePenalty;
     if (!p) return null;
-    return p.id;
+    return `${p.startedAt}:${p.kickerId}:${p.goalieId}:${p.mode}`;
   }
 
   private isKickPending(state: PublicState): boolean {
@@ -271,19 +259,6 @@ export class PenaltyScene extends Phaser.Scene {
     this.lastAimPenaltyKey = key;
     this.aimX = DEFAULT_AIM_X;
     this.aimY = DEFAULT_AIM_Y;
-    this.power = 50;
-    this.powerDir = 1;
-  }
-
-  private maybeSendPenaltyReady(state: PublicState) {
-    if (state.phase !== "penalty" || !state.activePenalty?.awaitingReady) return;
-    const p = state.activePenalty;
-    if (p.kickerId !== Net.sessionId && p.goalieId !== Net.sessionId) return;
-    const now = this.time.now;
-    if (this.readyPenaltyId === p.id && now - this.lastReadySentAt < 750) return;
-    this.readyPenaltyId = p.id;
-    this.lastReadySentAt = now;
-    Net.send("penaltyReady", { penaltyId: p.id });
   }
 
   private render(state: PublicState) {
@@ -296,9 +271,8 @@ export class PenaltyScene extends Phaser.Scene {
     const goalieId = state.activePenalty?.goalieId ?? state.lastShot?.goalieId ?? match?.p2 ?? null;
     const kicker = getPlayer(state, kickerId);
     const goalie = getPlayer(state, goalieId);
-    const penaltyActive = state.phase === "penalty" && !state.activePenalty?.awaitingReady;
-    const isKicker = kickerId === Net.sessionId && penaltyActive;
-    const isGoalie = goalieId === Net.sessionId && penaltyActive;
+    const isKicker = kickerId === Net.sessionId && state.phase === "penalty";
+    const isGoalie = goalieId === Net.sessionId && state.phase === "penalty";
     const kickerIsBot = !!kicker?.isBot;
 
     addTopBar(this, state, state.isSpectating ? `LIVE SPECTATOR • ${this.topMessage(state, kicker, goalie)}` : this.topMessage(state, kicker, goalie));
@@ -367,7 +341,6 @@ export class PenaltyScene extends Phaser.Scene {
     if (!p) return state.message;
     const kickerLabel = playerName(kicker);
     const goalieLabel = playerName(goalie);
-    if (p.awaitingReady) return `Loading ${kickerLabel} and ${goalieLabel} into the penalty scene...`;
     if (kicker?.isBot) return `${kickerLabel} is winding up against ${goalieLabel}. Bot shot in ${secondsRemaining(p.timeoutAt)}s.`;
     return `${kickerLabel} steps up against ${goalieLabel}.`;
   }
@@ -451,9 +424,8 @@ export class PenaltyScene extends Phaser.Scene {
   }
 
   private drawZones(state: PublicState) {
-    const clockActive = state.phase === "penalty" && !state.activePenalty?.awaitingReady;
-    const isGoalie = clockActive && state.activePenalty?.goalieId === Net.sessionId;
-    const isKicker = clockActive && state.activePenalty?.kickerId === Net.sessionId;
+    const isGoalie = state.phase === "penalty" && state.activePenalty?.goalieId === Net.sessionId;
+    const isKicker = state.phase === "penalty" && state.activePenalty?.kickerId === Net.sessionId;
     const picked = state.activePenalty?.goaliePick;
     const shotZone = state.lastShot?.zone;
     const goaliePick = state.lastShot?.goaliePick;
@@ -478,7 +450,7 @@ export class PenaltyScene extends Phaser.Scene {
       rect.setStrokeStyle(strokeWidth, strokeColour, isPicked ? 0.9 : 0.38);
       if (isGoalie) {
         rect.setInteractive({ useHandCursor: true });
-        rect.on("pointerdown", () => Net.send("goaliePick", { zone: z, penaltyId: state.activePenalty?.id }));
+        rect.on("pointerdown", () => Net.send("goaliePick", z));
       }
 
       this.add.text(x + w / 2, y + h / 2, ZONE_LABELS[z], {
@@ -995,30 +967,6 @@ export class PenaltyScene extends Phaser.Scene {
     const panelY = 672;
     this.add.rectangle(W / 2, panelY, width, 64, 0x07170c, 0.91).setStrokeStyle(4, 0xffd21f, 0.72).setDepth(24);
 
-    if (p.awaitingReady) {
-      const localParticipant = p.kickerId === Net.sessionId || p.goalieId === Net.sessionId;
-      this.add.text(W / 2, panelY - 12, localParticipant ? "Penalty scene ready — syncing both players..." : "Preparing the live penalty...", {
-        fontFamily: "Arial",
-        fontSize: "15px",
-        fontStyle: "900",
-        color: "#ffffff",
-        stroke: "#000000",
-        strokeThickness: 3,
-        align: "center",
-        wordWrap: { width: width - 28 }
-      }).setOrigin(0.5).setDepth(25);
-      this.add.text(W / 2, panelY + 18, "The full shot clock starts after the players are loaded.", {
-        fontFamily: "Arial",
-        fontSize: "13px",
-        fontStyle: "bold",
-        color: "#fff2a6",
-        stroke: "#000000",
-        strokeThickness: 2,
-        align: "center"
-      }).setOrigin(0.5).setDepth(25);
-      return;
-    }
-
     if (isKicker) {
       this.add.text(W / 2, panelY - 16, "Aim in the goal. Time the green sweet spot.", {
         fontFamily: "Arial",
@@ -1044,7 +992,7 @@ export class PenaltyScene extends Phaser.Scene {
         if (!key || this.kickSentForPenalty === key) return;
         this.kickSentForPenalty = key;
         this.showLocalKickFeedback();
-        Net.send("shoot", { penaltyId: p.id, aimX: this.aimX, aimY: this.aimY, power: Math.round(this.power), releasedAt: Net.serverNow() });
+        Net.send("shoot", { aimX: this.aimX, aimY: this.aimY, power: Math.round(this.power) });
       }, pending ? 0x555555 : 0x9a2f10);
       this.kickButton.setDepth(30);
       if (pending) this.kickButton.setAlpha(0.62);
@@ -1128,18 +1076,16 @@ export class PenaltyScene extends Phaser.Scene {
     const isGoalie = p.goalieId === Net.sessionId;
     const isKicker = p.kickerId === Net.sessionId;
     const botKicker = !!kicker?.isBot;
-    const title = p.awaitingReady ? "GETTING READY" : botKicker ? "BOT SHOT IN" : isKicker ? "SHOT CLOCK" : isGoalie ? "DIVE CLOCK" : "SHOT CLOCK";
+    const title = botKicker ? "BOT SHOT IN" : isKicker ? "SHOT CLOCK" : isGoalie ? "DIVE CLOCK" : "SHOT CLOCK";
     const detail = botKicker
       ? `${shortText(playerName(kicker), 18)} will kick automatically.`
-      : p.awaitingReady
-        ? "The full clock begins when both players finish loading."
       : isKicker
         ? "Take the kick before time runs out."
         : `${shortText(playerName(kicker), 18)} is lining up the shot.`;
 
     const x = 1120;
     const y = 508;
-    const warning = !p.awaitingReady && seconds <= 2;
+    const warning = seconds <= 2;
 
     if (!this.countdownBg) {
       this.countdownBg = this.add.rectangle(x, y, 252, 126, 0x07170c, 0.92).setDepth(31);
@@ -1181,7 +1127,7 @@ export class PenaltyScene extends Phaser.Scene {
       .setFillStyle(warning ? 0x5b130b : 0x07170c, 0.92)
       .setStrokeStyle(4, warning ? 0xff4c4c : 0xffd21f, 0.85);
     this.countdownTitle?.setText(title);
-    this.countdownSeconds?.setText(p.awaitingReady ? "..." : `${seconds}s`).setColor(warning ? "#ffdddd" : "#fff2a6");
+    this.countdownSeconds?.setText(`${seconds}s`).setColor(warning ? "#ffdddd" : "#fff2a6");
     this.countdownDetail?.setText(detail);
     if (isGoalie && p.goaliePick && this.countdownLock) {
       this.countdownLock.setText(`Locked: ${ZONE_HINTS[p.goaliePick]}`).setVisible(true);
@@ -1192,7 +1138,7 @@ export class PenaltyScene extends Phaser.Scene {
 
   private setAimFromPointer(pointer: Phaser.Input.Pointer) {
     const s = this.state;
-    if (s?.phase !== "penalty" || s.activePenalty?.awaitingReady || s.activePenalty?.kickerId !== Net.sessionId) return;
+    if (s?.phase !== "penalty" || s.activePenalty?.kickerId !== Net.sessionId) return;
     const wx = pointer.worldX;
     const wy = pointer.worldY;
     if (wx < GOAL.x || wx > GOAL.x + GOAL.w || wy < GOAL.y || wy > GOAL.y + GOAL.h) return;
