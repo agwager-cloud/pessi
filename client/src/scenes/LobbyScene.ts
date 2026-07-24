@@ -100,6 +100,7 @@ export class LobbyScene extends Phaser.Scene {
     const isHost = Net.sessionId === state.hostId;
     const humans = state.players.filter((p) => !p.isBot).length;
     const bots = state.players.filter((p) => p.isBot).length;
+    const unreadyHumans = state.players.filter((p) => !p.isBot && p.connected && p.characterIndex < 0).length;
     const needed = Math.max(0, state.tournamentSize - humans - bots);
 
     const leftX = 26;
@@ -149,13 +150,15 @@ export class LobbyScene extends Phaser.Scene {
     this.drawPlayerGrid(state, isHost, leftX + 16, leftY + 108, leftW - 32, leftH - 128);
 
     if (isHost) {
-      this.add.text(rightX + rightW / 2, rightY + 78, "Pick a bracket size. Bots fill the empty spots. Tap a card, then remove selected if needed.", {
+      addButton(this, rightX + rightW / 2, rightY + 70, 252, 38, "← CHARACTER SELECT", () => Net.send("showCharacterSelect"), 0x145b8f);
+
+      this.add.text(rightX + rightW / 2, rightY + 96, "Students can keep joining while you organise the lobby.", {
         fontFamily: "Arial",
-        fontSize: "15px",
+        fontSize: "13px",
         fontStyle: "bold",
         color: "#dff7e5",
         align: "center",
-        wordWrap: { width: rightW - 36 }
+        wordWrap: { width: rightW - 34 }
       }).setOrigin(0.5, 0);
 
       this.add.text(rightX + rightW / 2, rightY + 148, "Bracket size", {
@@ -173,7 +176,7 @@ export class LobbyScene extends Phaser.Scene {
         addButton(
           this,
           startX + i * spacing,
-          rightY + 198,
+          rightY + 194,
           50,
           50,
           String(size),
@@ -182,21 +185,33 @@ export class LobbyScene extends Phaser.Scene {
         );
       });
 
-      addButton(this, rightX + rightW / 2, rightY + 282, 236, 56, "+ ADD BOT", () => Net.send("addBot"), 0x315011);
-      addButton(this, rightX + rightW / 2, rightY + 354, 266, 56, "REMOVE SELECTED", () => {
+      addButton(this, rightX + rightW / 2, rightY + 266, 236, 50, "+ ADD BOT", () => Net.send("addBot"), 0x315011);
+      addButton(this, rightX + rightW / 2, rightY + 326, 266, 50, "REMOVE SELECTED", () => {
         if (this.selectedId) Net.send("removePlayer", this.selectedId);
       }, this.selectedId ? 0x792323 : 0x4d2b2b);
-      addButton(this, rightX + rightW / 2, rightY + 438, 286, 70, "START TOURNAMENT", () => Net.send("startTournament"), 0x0b5d33);
+      addButton(
+        this,
+        rightX + rightW / 2,
+        rightY + 386,
+        266,
+        48,
+        unreadyHumans > 0 ? `REMOVE ${unreadyHumans} UNREADY` : "ALL PLAYERS READY",
+        () => { if (unreadyHumans > 0) Net.send("removeUnreadyPlayers"); },
+        unreadyHumans > 0 ? 0x8a4a12 : 0x35523d
+      );
+      addButton(this, rightX + rightW / 2, rightY + 458, 286, 64, "START TOURNAMENT", () => Net.send("startTournament"), 0x0b5d33);
 
-      this.add.text(rightX + rightW / 2, rightY + 506, "The lobby adapts for 2, 4, 8, 16, or 32 players. Jersey numbers are shown inside each country circle.", {
+      this.add.text(rightX + rightW / 2, rightY + 506, unreadyHumans > 0
+        ? "Unready students appear as gold cards. Select one to remove it, or remove all unready players above."
+        : "Everyone has confirmed. Add bots if needed, then start the tournament.", {
         fontFamily: "Arial",
-        fontSize: "15px",
+        fontSize: "13px",
         fontStyle: "bold",
         color: "#ffffff",
         stroke: "#000000",
         strokeThickness: 3,
         align: "center",
-        wordWrap: { width: rightW - 40 }
+        wordWrap: { width: rightW - 36 }
       }).setOrigin(0.5, 0);
     } else {
       this.add.text(rightX + rightW / 2, rightY + 210, "Waiting for the host to start the tournament.", {

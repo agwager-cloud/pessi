@@ -134,6 +134,10 @@ export class GameRoom {
   private spectatorMatchByViewer = new Map<string, string>();
   private disconnectedPlayerCleanup = new Map<string, NodeJS.Timeout>();
   private hostReassignTimer: NodeJS.Timeout | null = null;
+  // Hotfix 76: the host may move between Character Select and Lobby while
+  // students are still choosing. This is a per-host view preference; it must
+  // never rewind the entire classroom when a late student joins.
+  private hostSetupView: "characterSelect" | "lobby" = "lobby";
 
   constructor(roomCode: string) { this.roomCode = roomCode; this.tick = setInterval(() => this.update(), 100); }
   join(client: ClientSocket, options: JoinOptions) {
@@ -161,13 +165,9 @@ export class GameRoom {
       this.hostReassignTimer = null;
     }
 
-    // Only a genuinely unselected player should place the room into character
-    // selection. A reconnecting player who already chose a character must never
-    // rewind the whole classroom back to CharacterSelectScene.
-    const joinedPlayer = this.players.get(client.sessionId);
-    if ((this.phase === "lobby" || this.phase === "characterSelect") && joinedPlayer && joinedPlayer.characterIndex < 0) {
-      this.phase = "characterSelect";
-    }
+    // Hotfix 76: joining students are routed to Character Select individually
+    // by publicState(). Do not change the shared room phase here, otherwise a
+    // late/unconfirmed student drags the host out of the Lobby.
 
     this.autoSizeToHumans();
     this.message = existing
@@ -210,6 +210,9 @@ export class GameRoom {
     const msg=raw as {type?:string;data?:unknown}; const type=String(msg.type??""); const data=msg.data;
     if(type==="selectCharacter") this.selectCharacter(client, Number(data));
     else if(type==="changePlayers") this.hostOnly(client,()=>this.changePlayers());
+    else if(type==="showCharacterSelect") this.hostOnly(client,()=>this.showCharacterSelect());
+    else if(type==="showLobby") this.hostOnly(client,()=>this.showLobby());
+    else if(type==="removeUnreadyPlayers") this.hostOnly(client,()=>this.removeUnreadyPlayers());
     else if(type==="setTournamentSize") this.hostOnly(client,()=>this.setTournamentSize(Number(data)));
     else if(type==="addBot") this.hostOnly(client,()=>this.addBot());
     else if(type==="removeBot") this.hostOnly(client,()=>this.removeBot(String(data??"")));
@@ -248,7 +251,15 @@ export class GameRoom {
     const r=view.runtime;
     const visiblePenalty=r?.activePenalty?{...r.activePenalty,goaliePick:viewerId===r.activePenalty.goalieId?r.activePenalty.goaliePick:null}:null;
     const viewerPlayer = viewerId ? this.players.get(viewerId) : null;
-    const viewerPhase = r ? r.phase : (viewerPlayer && !viewerPlayer.isBot && viewerPlayer.characterIndex < 0 ? "characterSelect" : this.phase);
+    let viewerPhase: PublicState["phase"] = r ? r.phase : this.phase;
+    if (!r && this.phase === "lobby") {
+      // Every unselected student sees Character Select, while selected students
+      // remain in the Lobby. The host can explicitly switch between both setup
+      // screens without changing what the rest of the class sees.
+      if (viewerPlayer && !viewerPlayer.isBot && viewerPlayer.characterIndex < 0) viewerPhase = "characterSelect";
+      else if (viewerId === this.hostId) viewerPhase = this.hostSetupView;
+      else viewerPhase = "lobby";
+    }
     const liveCount=this.runtimes.size;
     return { roomCode:this.roomCode,hostId:this.hostId,phase:viewerPhase,tournamentSize:this.tournamentSize,players:[...this.players.values()].sort((a,b)=>a.name.localeCompare(b.name)),bracket:this.bracket,activeMatchId:r?.matchId??null,isSpectating:view.isSpectating,liveMatchIds:[...this.runtimes.keys()],activePenalty:visiblePenalty,tackle:r?.tackle??null,lastShot:r?.lastShot??null,roundNumber:this.roundNumber,matchIndex:r?this.matchById(r.matchId)?.matchNo??0:this.matchIndex,message:r?.message??(this.phase==="roundLive"?`Round ${this.roundNumber} is live • ${liveCount} human match${liveCount===1?"":"es"} still playing.`:this.message),serverNow:Date.now()};
   }
@@ -265,12 +276,12 @@ export class GameRoom {
       return;
     }
     player.characterIndex = index;
+    if (player.id === this.hostId) this.hostSetupView = "lobby";
     this.message = `${player.name} selected ${CHARACTERS[index].name}.`;
     const waiting = [...this.players.values()].some(p => !p.isBot && p.connected && p.characterIndex < 0);
-    if (!waiting && this.phase === "characterSelect") {
-      this.phase = "lobby";
+    if (!waiting) {
       this.autoSizeToHumans();
-      this.message = "Everyone has selected a player. Welcome back to the lobby.";
+      this.message = "Everyone has selected a player. The host can start the tournament.";
     }
     this.broadcastState();
   }
@@ -290,9 +301,41 @@ export class GameRoom {
     this.bracket = [];
     this.roundNumber = 0;
     this.matchIndex = 0;
-    this.phase = "characterSelect";
+    this.phase = "lobby";
+    this.hostSetupView = "characterSelect";
     this.autoSizeToHumans();
     this.message = "Choose new players — first in, best dressed!";
+  }
+  private showCharacterSelect(){
+    if(this.phase!=="lobby")return;
+    this.hostSetupView="characterSelect";
+    this.message="Host is viewing player selection. Students can keep joining and choosing.";
+  }
+  private showLobby(){
+    if(this.phase!=="lobby")return;
+    const host=this.hostId?this.players.get(this.hostId):null;
+    if(host&&!host.isBot&&host.characterIndex<0){
+      this.message="Choose and confirm your footballer before returning to the lobby.";
+      return;
+    }
+    this.hostSetupView="lobby";
+    this.message="Host returned to the lobby. Unready students can keep choosing their players.";
+  }
+  private removeUnreadyPlayers(){
+    if(this.phase!=="lobby")return;
+    let removed=0;
+    for(const [id,player] of [...this.players.entries()]){
+      if(id===this.hostId||player.isBot||player.characterIndex>=0)continue;
+      this.clients.get(id)?.ws.close(4001,"Removed by host before tournament");
+      this.clients.delete(id);
+      this.players.delete(id);
+      this.cancelDisconnectedPlayerCleanup(id);
+      removed++;
+    }
+    this.autoSizeToHumans();
+    this.message=removed>0
+      ? `${removed} unready player${removed===1?"":"s"} removed. The host can now continue.`
+      : "All connected human players have confirmed a footballer.";
   }
   private pickCharacterIndex(requested:number){const used=new Set([...this.players.values()].filter(p=>p.characterIndex>=0).map(p=>p.characterIndex));const safe=Number.isFinite(requested)?clamp(Math.floor(requested),0,CHARACTERS.length-1):0;if(!used.has(safe))return safe;for(let i=0;i<CHARACTERS.length;i++)if(!used.has(i))return i;return safe;}
   private autoSizeToHumans(){if(this.phase!=="lobby"&&this.phase!=="characterSelect")return;const h=[...this.players.values()].filter(p=>!p.isBot).length;this.tournamentSize=nextTournamentSize(h);this.trimBotsToFit();}
@@ -303,7 +346,7 @@ export class GameRoom {
   private removeBot(id:string){const p=this.players.get(id);if(p?.isBot&&this.phase==="lobby"){this.players.delete(id);this.message=`${p.name} bot removed.`;}}
   private removePlayer(id:string){const p=this.players.get(id);if(!p||(this.phase!=="lobby"&&this.phase!=="characterSelect")||id===this.hostId)return;this.players.delete(id);this.autoSizeToHumans();}
   private createMatch(round:number,matchNo:number,p1:string,p2:string):BracketMatch{return{id:`r${round}m${matchNo}_${Date.now()}_${Math.floor(Math.random()*9999)}`,round,matchNo,p1,p2,p1Score:0,p2Score:0,p1Shootout:0,p2Shootout:0,p1ShootoutTaken:0,p2ShootoutTaken:0,winnerId:null,loserId:null,events:[],status:"pending"};}
-  private startTournament(){if(this.phase!=="lobby")return;if([...this.players.values()].some(p=>!p.isBot&&p.connected&&p.characterIndex<0)){this.message="Waiting for every human player to choose a character.";return;}this.fillBots();const entrants=[...this.players.values()].slice(0,this.tournamentSize);if(entrants.length<2){this.message="Need at least 2 players.";return;}for(const p of this.players.values()){p.eliminated=!entrants.some(e=>e.id===p.id);p.wins=0;}this.bracket=[];this.roundNumber=1;const ids=shuffle(entrants.map(p=>p.id));for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));this.phase="tournament";this.message="First round matchups are ready. Host can begin Round 1.";}
+  private startTournament(){if(this.phase!=="lobby")return;if([...this.players.values()].some(p=>!p.isBot&&p.connected&&p.characterIndex<0)){this.message="Some students have not confirmed a footballer. Return to the lobby and remove unready players, or wait for them to finish.";return;}this.fillBots();const entrants=[...this.players.values()].slice(0,this.tournamentSize);if(entrants.length<2){this.message="Need at least 2 players.";return;}for(const p of this.players.values()){p.eliminated=!entrants.some(e=>e.id===p.id);p.wins=0;}this.bracket=[];this.roundNumber=1;this.hostSetupView="lobby";const ids=shuffle(entrants.map(p=>p.id));for(let i=0;i<ids.length;i+=2)this.bracket.push(this.createMatch(1,i/2+1,ids[i],ids[i+1]));this.phase="tournament";this.message="First round matchups are ready. Host can begin Round 1.";}
   private beginRound(){if(this.phase!=="tournament")return;this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();for(const m of this.bracket.filter(m=>m.round===this.roundNumber&&m.status==="pending")){if(this.players.get(m.p1)?.isBot&&this.players.get(m.p2)?.isBot)this.autoResolveBotMatch(m);else{m.status="playing";const r:MatchRuntime={matchId:m.id,phase:"tackle",activePenalty:null,penaltyReadyPlayers:new Set<string>(),tackle:null,lastShot:null,message:"",timer:null};this.runtimes.set(m.id,r);this.startTackle(r,m.p1,m.p2);}}this.phase="roundLive";this.message=`Round ${this.roundNumber} is live. All human matches started together.`;this.checkRoundComplete();}
   private matchById(id:string){return this.bracket.find(m=>m.id===id)??null;}
   private autoResolveBotMatch(m:BracketMatch){m.status="playing";m.p1Score=Math.random()<.72?1:0;m.p2Score=Math.random()<.72?1:0;if(m.p1Score===m.p2Score){for(let i=0;i<5;i++){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}while(m.p1Shootout===m.p2Shootout){m.p1ShootoutTaken++;m.p2ShootoutTaken++;if(Math.random()<.74)m.p1Shootout++;if(Math.random()<.74)m.p2Shootout++;}}const w=m.p1Score*10+m.p1Shootout>=m.p2Score*10+m.p2Shootout?m.p1:m.p2;this.markFinished(m,w,w===m.p1?m.p2:m.p1);}
@@ -547,7 +590,7 @@ export class GameRoom {
     this.phase="tournament";
     this.message="New random matchups are ready. Host can begin Round 1.";
   }
-  private backToLobby(){this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();this.phase="lobby";this.bracket=[];this.roundNumber=0;for(const p of this.players.values())p.eliminated=false;this.autoSizeToHumans();this.message="Back in the lobby. Ankles reset.";}
+  private backToLobby(){this.clearAllTimers();this.runtimes.clear();this.spectatorMatchByViewer.clear();this.phase="lobby";this.hostSetupView="lobby";this.bracket=[];this.roundNumber=0;for(const p of this.players.values())p.eliminated=false;this.autoSizeToHumans();this.message="Back in the lobby. Ankles reset.";}
   private cancelDisconnectedPlayerCleanup(sessionId:string){
     const timer=this.disconnectedPlayerCleanup.get(sessionId);
     if(!timer)return;
@@ -578,6 +621,7 @@ export class GameRoom {
       const replacement=[...this.players.values()].find(p=>!p.isBot&&p.connected);
       if(replacement){
         this.hostId=replacement.id;
+        this.hostSetupView="lobby";
         this.message=`${replacement.name} is now the classroom host.`;
         this.broadcastState();
       }

@@ -112,6 +112,7 @@ export class CharacterSelectScene extends Phaser.Scene {
     this.add.rectangle(W / 2, H / 2, W, H, 0x04130b, 0.52);
 
     const me = state.players.find((p) => p.id === Net.sessionId) ?? null;
+    const isHost = Net.sessionId === state.hostId;
     const selectedHumans = state.players.filter((p) => !p.isBot && p.characterIndex >= 0).length;
     const available = CHARACTERS.length - new Set(state.players.filter((p) => p.characterIndex >= 0).map((p) => p.characterIndex)).size;
 
@@ -290,10 +291,18 @@ export class CharacterSelectScene extends Phaser.Scene {
       }).setOrigin(1, 0.5);
     }
 
+    // Hotfix 76: once the host has locked in a footballer they can move freely
+    // between this screen and the Lobby while late students keep selecting.
+    if (isHost && me && me.characterIndex >= 0) {
+      addButton(this, W - 155, 644, 250, 50, "GO TO LOBBY →", () => Net.send("showLobby"), 0x145b8f);
+    }
+
     const safeMessage = String(state.message ?? "Choose an available footballer.");
     const statusColor = safeMessage.toLowerCase().includes("taken") ? "#ffb7b7" : "#ffffff";
     const footerMessage = me?.characterIndex >= 0
-      ? "Player locked in — waiting for the other players."
+      ? isHost
+        ? "Player locked in — use GO TO LOBBY while students finish choosing."
+        : "Player locked in — waiting for the host and other players."
       : this.pendingIndex !== null
         ? "Reserving player..."
         : this.selectedIndex !== null
